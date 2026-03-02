@@ -68,6 +68,9 @@ public_probe code=200 ...
 - "expose port 3000 to the internet"
 - "给我一个公网 URL"
 - "start my project with a public URL"
+- **"用 npm run dev 启动我的项目"** → 自动加 `--start-cmd "npm run dev"`
+- **"用 scripts/start.sh 启动"** → 自动加 `--startsh scripts/start.sh`
+- **"用端口 4545 启动"** → 自动传 port=4545
 
 ---
 
