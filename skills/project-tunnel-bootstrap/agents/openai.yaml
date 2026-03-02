@@ -1,7 +1,11 @@
 interface:
-  display_name: "Project Tunnel Bootstrap"
-  short_description: "One-step install/start for project tunnel domain"
-  default_prompt: "Use $project-tunnel-bootstrap to create project-tunnel.sh in this project and start tunneling on a specific port."
+  display_name: "Project Tunnel Runner"
+  short_description: "Run project-tunnel.sh with auto environment fix. Diagnoses and installs missing tools (python3, curl, node, npm, lsof), then starts/stops/checks tunnel."
+  default_prompt: |
+    Use $project-tunnel-bootstrap to start tunneling for this project.
+    Run scripts/run_tunnel.sh start --port <PORT> in the project directory.
+    If there are environment errors, run scripts/check_env.sh to diagnose,
+    then scripts/fix_env.sh <missing tools> to fix, and retry.
 
 policy:
   allow_implicit_invocation: true
