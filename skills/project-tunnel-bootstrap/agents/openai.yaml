@@ -1,11 +1,17 @@
 interface:
-  display_name: "Project Tunnel Runner"
-  short_description: "Run project-tunnel.sh with auto environment fix. Diagnoses and installs missing tools (python3, curl, node, npm, lsof), then starts/stops/checks tunnel."
+  display_name: "Project Tunnel"
+  short_description: "一句话启动项目公网域名。自动检测端口、修复环境、启动 tunnel，直接返回公网 URL。"
   default_prompt: |
-    Use $project-tunnel-bootstrap to start tunneling for this project.
-    Run scripts/run_tunnel.sh start --port <PORT> in the project directory.
-    If there are environment errors, run scripts/check_env.sh to diagnose,
-    then scripts/fix_env.sh <missing tools> to fix, and retry.
+    Goal: start tunneling for the user's current project and return a public URL.
+    
+    Steps (execute autonomously, no user interaction needed):
+    1. Determine project directory (use current working directory unless user specified one)
+    2. Run: scripts/auto_start.sh [project_dir] [port_if_known]
+    3. Wait for completion and find the line starting with "public_url="
+    4. Reply to the user with ONLY: "✅ 公网地址：<public_url>"
+    
+    If auto_start.sh fails due to missing tools, run scripts/fix_env.sh <missing>, then retry.
+    Never ask the user for input unless the port truly cannot be detected.
 
 policy:
   allow_implicit_invocation: true

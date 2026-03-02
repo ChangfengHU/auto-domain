@@ -1,86 +1,94 @@
 ---
 name: project-tunnel-bootstrap
 description: >
-  Run project-tunnel.sh in the current project. Automatically installs the script,
-  checks the environment, fixes missing tools (python3/python, curl, node, npm, lsof),
-  and starts/stops/checks tunnel status. Use when the user wants to start tunneling,
-  check tunnel status, or when the environment is missing required tools.
+  当用户说"启动项目"、"给项目一个公网域名"、"start tunnel"、"expose my project"、
+  "让项目可以公网访问"、"start my project with a public URL" 时自动触发。
+  无需用户做任何操作：自动检测项目目录和端口，修复环境，启动 tunnel，
+  直接返回公网域名 URL。
 ---
 
 # Project Tunnel Bootstrap
 
-**核心职责**：执行 `project-tunnel.sh`。脚本会被自动安装到项目目录。  
-如果环境缺少依赖，AI 负责诊断并修复，直到脚本能正常运行。
+**一句话触发，全自动执行，直接给出公网 URL。用户什么都不需要做。**
 
 ---
 
-## 主入口（推荐）
+## Agent 执行步骤（全自动，无需用户介入）
 
-```bash
-# 启动 tunnel（自动检测环境、安装缺失依赖、运行脚本）
-scripts/run_tunnel.sh start --port 3000
-
-# 停止
-scripts/run_tunnel.sh stop --port 3000
-
-# 查看状态
-scripts/run_tunnel.sh status --port 3000
 ```
-
-`run_tunnel.sh` 会自动完成：
-1. 将最新 `project-tunnel.sh` 复制到当前项目目录
-2. 检测环境（python3/python、curl、node、npm、lsof）
-3. 发现缺失工具 → 自动安装（macOS 用 brew，Linux 用 apt/yum）
-4. 环境 OK 后执行 `project-tunnel.sh`
-
----
-
-## 单步工具（AI 诊断用）
-
-```bash
-# 仅检测环境，不运行脚本
-scripts/check_env.sh
-# 输出示例：
-#   ✅ environment OK
-#   ❌ missing: python3 node
-
-# 修复指定工具（AI 诊断后调用）
-scripts/fix_env.sh python3 node
-
-# 仅安装脚本到当前项目，不运行
-scripts/install_project_tunnel.sh [project_dir]
+用户说：启动我的项目，给我一个公网域名
+         ↓
+1. 确认当前项目目录（pwd 或用户提到的目录）
+2. 运行 scripts/auto_start.sh [project_dir] [port]
+         ↓
+   auto_start.sh 自动完成：
+   ├─ 检测端口（从 package.json / 框架类型自动判断）
+   ├─ 安装/更新 project-tunnel.sh 到项目目录
+   ├─ 检测环境（python3/python, curl, node, npm, lsof）
+   ├─ 自动安装缺失工具（brew / apt / yum）
+   └─ 启动 tunnel
+         ↓
+3. 从输出中提取 public_url
+4. 直接告诉用户：
+   "✅ 你的项目已公网可访问：https://xxx-huchangfeng.vyibc.com"
 ```
 
 ---
 
-## AI 诊断流程
+## 调用方式
 
-当 `run_tunnel.sh` 报错时，AI 按以下顺序排查：
+**标准调用（AI agent 使用）：**
+```bash
+# 当前目录，自动检测端口
+scripts/auto_start.sh
 
-1. **运行** `scripts/check_env.sh` → 确认缺少哪些工具
-2. **运行** `scripts/fix_env.sh <缺失工具>` → 自动安装
-3. **再次运行** `scripts/check_env.sh` → 验证修复结果
-4. **重新执行** `scripts/run_tunnel.sh start --port <PORT>`
+# 指定目录和端口
+scripts/auto_start.sh /Users/huchangfeng/todo-katong 4545
+```
 
-如果自动安装失败（无 sudo 权限、特殊环境等），AI 给出对应平台的手动安装命令。
-
----
-
-## 环境要求
-
-| 工具 | macOS 安装 | Linux 安装 |
-|------|-----------|-----------|
-| `curl` | 自带 / `brew install curl` | `apt install curl` |
-| `python3` 或 `python`（≥3） | `brew install python3` | `apt install python3` |
-| `node` + `npm` | `brew install node` | `apt install nodejs npm` |
-| `lsof` | 自带 | `apt install lsof` |
-
-> `go` **不需要**安装，agent 二进制由脚本自动下载到 `~/.tunneling/bin/`
+**输出格式（从中提取 public_url）：**
+```
+[DONE]
+project: todo-katong
+hostname: todo-katong-huchangfeng.vyibc.com
+public_url: https://todo-katong-huchangfeng.vyibc.com   ← 返回给用户这行
+tunnel_id: 5b29718c-...
+target: http://127.0.0.1:4545
+public_probe code=200 ...
+```
 
 ---
 
-## Notes
+## 触发关键词示例
 
-- `assets/project-tunnel.sh` 是脚本本体，随 skill 版本更新
-- 机器级共享 tunnel：同一台机器上所有项目共享一个 tunnel_id，存于 `~/.tunneling/machine_state.json`
-- 旧版 `install_project_tunnel.sh` / `start_project_tunnel.sh` 仍保留，向后兼容
+- "启动我的项目"
+- "给我的项目一个公网域名"
+- "让外网能访问我的项目"
+- "start tunnel for my project"
+- "expose port 3000 to the internet"
+- "给我一个公网 URL"
+- "start my project with a public URL"
+
+---
+
+## 端口自动检测规则
+
+| 框架 | 默认端口 |
+|------|---------|
+| Next.js | 3000 |
+| Vite / Svelte | 5173 |
+| Nuxt | 3000 |
+| Angular | 4200 |
+| 其他 / 未识别 | 3000 |
+| package.json scripts 中有 `PORT=XXXX` | 自动读取 |
+
+---
+
+## 环境问题处理
+
+如果 `auto_start.sh` 报错：
+```bash
+scripts/check_env.sh          # 查看缺少哪些工具
+scripts/fix_env.sh python3    # 修复指定工具
+scripts/auto_start.sh         # 重试
+```
