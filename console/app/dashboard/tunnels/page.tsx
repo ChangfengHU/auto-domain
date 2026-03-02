@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Plus, Server, XCircle, Search, Settings as SettingsIcon, Trash2, Copy, Play, ShieldAlert } from 'lucide-react'
+import { Plus, Server, XCircle, Search, Settings as SettingsIcon, Trash2, Copy, Check, Play, ShieldAlert } from 'lucide-react'
 import { createClient } from '@/utils/supabase/client'
 
 export default function TunnelsPage() {
@@ -9,7 +9,14 @@ export default function TunnelsPage() {
     const [tunnels, setTunnels] = useState<any[]>([])
     const [loading, setLoading] = useState(true)
     const [isAdmin, setIsAdmin] = useState(false)
+    const [copiedId, setCopiedId] = useState(false)
     const supabase = createClient()
+
+    const copyTunnelId = (id: string) => {
+        navigator.clipboard.writeText(id)
+        setCopiedId(true)
+        setTimeout(() => setCopiedId(false), 1500)
+    }
 
     useEffect(() => {
         const init = async () => {
@@ -163,7 +170,7 @@ export default function TunnelsPage() {
                                     <h2 className="text-xl font-bold text-gray-900" id="slide-over-title">{selectedTunnel.name}</h2>
                                     <p className="text-sm font-mono text-gray-500 flex items-center mt-0.5">
                                         {selectedTunnel.id}
-                                        <button className="ml-2 text-gray-400 hover:text-indigo-600 transition-colors"><Copy className="w-3.5 h-3.5" /></button>
+                                        <button className="ml-2 text-gray-400 hover:text-indigo-600 transition-colors" onClick={() => copyTunnelId(selectedTunnel.id)}>{copiedId ? <Check className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5" />}</button>
                                     </p>
                                 </div>
                             </div>
