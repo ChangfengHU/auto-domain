@@ -43,7 +43,7 @@ print(m.group(1) if m else '')
     elif [[ -f "vite.config.js"  || -f "vite.config.ts"  ]]; then PORT=5173
     elif [[ -f "nuxt.config.js"  || -f "nuxt.config.ts"  ]]; then PORT=3000
     elif [[ -f "angular.json"    ]]; then PORT=4200
-    elif [[ -f "svelte.config.js"]]; then PORT=5173
+    elif [[ -f "svelte.config.js" ]]; then PORT=5173
     else PORT=3000; fi
   fi
 fi
