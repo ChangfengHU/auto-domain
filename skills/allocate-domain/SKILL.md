@@ -32,13 +32,23 @@ Allocate a domain for my project "myproject" running on localhost:5318
 
 ## 返回信息
 
-```json
-{
-  "public_url": "http://myproject-a8vau2.vyibc.com",
-  "tunnel_id": "68bb4bf9-9a6f-4e21-8aa5-3cfb7dc1cfcb",
-  "tunnel_token": "dHGAFkpuQx610ShnxCqwbBoJFGHj5y70EDv7RsN26Ds",
-  "agent_command": "./agent -server ws://152.32.214.95/connect ..."
-}
+```
+✅ 域名分配成功！
+
+🌐 公网地址：http://myproject-a8vau2.vyibc.com
+
+📌 Tunnel 信息：
+- Tunnel ID: 68bb4bf9-9a6f-4e21-8aa5-3cfb7dc1cfcb
+- Token: dHGAFkpuQx610ShnxCqwbBoJFGHj5y70EDv7RsN26Ds
+
+🚀 后续步骤：
+1. 确保项目运行在 127.0.0.1:3000
+2. 访问 http://myproject-a8vau2.vyibc.com 即可公网访问
+
+📊 管理你的域名：
+访问 https://domain.vyibc.com/login
+输入 Tunnel ID: 68bb4bf9-9a6f-4e21-8aa5-3cfb7dc1cfcb
+登录后可以修改、启用/禁用分配的域名
 ```
 
 ## 触发关键词
@@ -54,7 +64,7 @@ Allocate a domain for my project "myproject" running on localhost:5318
 ## 环境要求
 
 - `curl` - 用于调用 API
-- 网络连接到 152.32.214.95:3002
+- 网络连接到 https://domain.vyibc.com
 
 ## 工作流程
 
@@ -64,5 +74,6 @@ Allocate a domain for my project "myproject" running on localhost:5318
 1. 提取项目名、端口、用户ID、域名
 2. 调用 /control/api/sessions/register API
 3. 解析返回的 tunnel 和 route 信息
-4. 返回 public_url 和 agent 启动命令
+4. 返回 public_url、Tunnel ID 和管理链接
 ```
+

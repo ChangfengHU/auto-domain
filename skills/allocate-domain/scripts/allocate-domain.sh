@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # 默认值
-API_URL="${5:-http://152.32.214.95:3002}"
+API_URL="${5:-https://domain.vyibc.com}"
 PROJECT_NAME="${1:-}"
 PORT="${2:-3000}"
 USER_ID="${3:-user}"
@@ -21,7 +21,7 @@ if [[ -z "$PROJECT_NAME" ]]; then
     echo "示例："
     echo "  $0 myproject 3000"
     echo "  $0 todo 5318 alice vyibc.com"
-    echo "  $0 app 8080 - - http://your-api:3002"
+    echo "  $0 app 8080 - - https://domain.vyibc.com"
     exit 1
 fi
 
@@ -59,7 +59,7 @@ fi
 
 # 解析响应
 PUBLIC_URL=$(echo "$RESPONSE" | grep -o '"public_url":"[^"]*"' | cut -d'"' -f4)
-TUNNEL_ID=$(echo "$RESPONSE" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+TUNNEL_ID=$(echo "$RESPONSE" | grep -o '"tunnel_id":"[^"]*"' | head -1 | cut -d'"' -f4 || echo "$RESPONSE" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
 TUNNEL_TOKEN=$(echo "$RESPONSE" | grep -o '"token":"[^"]*"' | head -1 | cut -d'"' -f4)
 HOSTNAME=$(echo "$RESPONSE" | grep -o '"hostname":"[^"]*"' | cut -d'"' -f4)
 
@@ -68,7 +68,7 @@ echo ""
 echo "✅ 域名分配成功！"
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "公网地址: $PUBLIC_URL"
+echo "🌐 公网地址: $PUBLIC_URL"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo "📌 完整信息："
@@ -76,12 +76,17 @@ echo "  Hostname: $HOSTNAME"
 echo "  Tunnel ID: $TUNNEL_ID"
 echo "  Token: $TUNNEL_TOKEN"
 echo ""
-echo "🚀 下一步："
+echo "🚀 后续步骤："
 echo "  1. 确保你的项目在 127.0.0.1:$PORT 上运行"
 echo "  2. 访问 $PUBLIC_URL 即可从公网访问"
-echo "  3. 如需启动 agent 以保持连接，使用返回的 agent_command"
+echo ""
+echo "📊 管理你的域名："
+echo "  访问: https://domain.vyibc.com/login"
+echo "  输入 Tunnel ID: $TUNNEL_ID"
+echo "  登录后可以修改、启用/禁用你分配的域名"
 echo ""
 
 # 完整 JSON 响应（用于脚本处理）
-echo "📊 完整 JSON 响应："
+echo "📋 完整 JSON 响应："
 echo "$RESPONSE" | python3 -m json.tool 2>/dev/null || echo "$RESPONSE"
+

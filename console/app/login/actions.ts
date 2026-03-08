@@ -1,26 +1,32 @@
 'use server'
 
-import { createClient } from '@/utils/supabase/server'
 import { redirect } from 'next/navigation'
 
+const CONTROL_API_BASE = process.env.CONTROL_API_BASE || 'http://127.0.0.1:18100'
+
 export async function login(formData: FormData) {
-    const email = formData.get('email') as string
-    const password = formData.get('password') as string
+    const tunnelId = formData.get('tunnel_id') as string
 
-    if (!email || !password) {
-        redirect('/login?error=Email and password are required')
+    if (!tunnelId) {
+        redirect('/login?error=Tunnel ID is required')
     }
 
-    const supabase = createClient()
-    const { error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-    })
+    try {
+        // Verify tunnel exists by calling control API
+        const response = await fetch(`${CONTROL_API_BASE}/api/tunnels/${tunnelId}`, {
+            method: 'GET',
+        })
 
-    if (error) {
-        console.error('Login error:', error.message)
-        redirect(`/login?error=${encodeURIComponent(error.message)}`)
+        if (!response.ok) {
+            redirect('/login?error=Invalid Tunnel ID or Tunnel not found')
+        }
+
+        // Store tunnel_id in session/cookie
+        // For now, we'll redirect to portal dashboard with tunnel_id as param
+        // The portal page will handle storage
+        redirect(`/portal/dashboard?tunnel_id=${encodeURIComponent(tunnelId)}`)
+    } catch (error) {
+        console.error('Login error:', error)
+        redirect('/login?error=Failed to verify Tunnel ID')
     }
-
-    redirect('/dashboard')
 }

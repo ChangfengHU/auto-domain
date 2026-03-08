@@ -14,7 +14,7 @@ interface:
     2. Construct the target as "127.0.0.1:{PORT}" or "localhost:{PORT}"
     
     3. Call the API:
-       curl -s -X POST 'http://152.32.214.95:3002/control/api/sessions/register' \
+       curl -s -X POST 'https://domain.vyibc.com/control/api/sessions/register' \
          -H 'Content-Type: application/json' \
          -d '{
            "user_id": "{USER_ID}",
@@ -25,17 +25,27 @@ interface:
     
     4. Parse the JSON response to extract:
        - public_url
-       - tunnel_id
+       - tunnel_id (from tunnel.id)
        - tunnel_token
        - agent_command
     
-    5. Reply to user with the public_url in a clear format:
-       ✅ 公网地址：<public_url>
+    5. Reply to user with a comprehensive message:
+       ✅ 域名分配成功！
        
-       完整信息：
+       🌐 公网地址：<public_url>
+       
+       📌 Tunnel 信息：
        - Tunnel ID: <tunnel_id>
-       - Tunnel Token: <tunnel_token>
-       - Agent 启动命令: <agent_command>
+       - Token: <tunnel_token>
+       
+       🚀 后续步骤：
+       1. 确保项目运行在 127.0.0.1:{PORT}
+       2. 访问 <public_url> 即可公网访问
+       
+       📊 管理你的域名：
+       访问 https://domain.vyibc.com/login
+       输入 Tunnel ID: <tunnel_id>
+       登录后可以修改、启用/禁用分配的域名
     
     Examples of user messages:
     - "给 myproject 分配域名，端口是 3000"

@@ -31,23 +31,31 @@ export async function updateSession(request: NextRequest) {
         data: { user },
     } = await supabase.auth.getUser()
 
+    // Allow public access to these routes
     if (
         !user &&
         !request.nextUrl.pathname.startsWith('/login') &&
+        !request.nextUrl.pathname.startsWith('/adminlogin') &&
         !request.nextUrl.pathname.startsWith('/auth') &&
         !request.nextUrl.pathname.startsWith('/portal') &&
         !request.nextUrl.pathname.startsWith('/control')
     ) {
-        // no user, potentially respond by redirecting the user to the login page
+        // Redirect unauthenticated users to user login (not admin login)
         const url = request.nextUrl.clone()
         url.pathname = '/login'
         return NextResponse.redirect(url)
     }
 
     // Handle root route redirection
-    if (user && request.nextUrl.pathname === '/') {
+    // Unauthenticated users go to /login (user tunnel login)
+    // Authenticated users go to /dashboard (admin dashboard)
+    if (request.nextUrl.pathname === '/') {
         const url = request.nextUrl.clone()
-        url.pathname = '/dashboard'
+        if (user) {
+            url.pathname = '/dashboard'
+        } else {
+            url.pathname = '/login'
+        }
         return NextResponse.redirect(url)
     }
 
