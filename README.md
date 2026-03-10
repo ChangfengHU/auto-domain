@@ -37,13 +37,26 @@
 
 ## 🚀 快速开始
 
+### ⚡ 一键安装 Skill
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/ChangfengHU/auto-domain/main/scripts/install-skill.sh)
+```
+
+安装完成后，直接对 Copilot 说：
+
+```
+给我的 myapp 项目分配一个公网域名，它在 localhost:3000 运行
+```
+
+---
+
 ### 方式 1：自然语言 Skill（推荐）
 
 使用 Copilot Skill 一句话分配域名：
 
 ```bash
-# 确保已安装 Copilot CLI
-copilot skills add ChangfengHU/tunneling-skills allocate-domain
+bash <(curl -fsSL https://raw.githubusercontent.com/ChangfengHU/auto-domain/main/scripts/install-skill.sh)
 ```
 
 然后对 Copilot 说：
