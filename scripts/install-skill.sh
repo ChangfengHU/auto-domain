@@ -41,7 +41,7 @@ if [[ -z "$TARGET" ]]; then
   echo "  3) Claude       (~/.claude/plugins/)"
   echo "  4) Gemini       (~/.gemini/skills/)"
   echo "  5) Antigravity  (~/.gemini/antigravity/knowledge/)"
-  echo "  6) Copilot      (~/.github-copilot/skills/)"
+  echo "  6) Copilot      (~/.copilot/skills/)"
   echo "  7) 全部安装"
   echo ""
   read -rp "请输入编号 [1-7]: " CHOICE
@@ -108,7 +108,7 @@ install_antigravity() {
 }
 
 install_copilot() {
-  local dir="${HOME}/.github-copilot/skills/${SKILL_NAME}"
+  local dir="${HOME}/.copilot/skills/${SKILL_NAME}"
   echo "  📦 Copilot → $dir"
   mkdir -p "$dir/agents"
   fetch "${SKILL_NAME}/SKILL.md"           "$dir/SKILL.md"
