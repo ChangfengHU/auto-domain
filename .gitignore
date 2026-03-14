@@ -9,3 +9,7 @@ scripts/start-*.sh
 
 # macOS
 .DS_Store
+.env.control
+.env.local.*.bak
+control
+/dist/

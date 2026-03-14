@@ -24,15 +24,17 @@ type Server struct {
 	agentServerWS   string
 	agentConfigURL  string
 	defaultAdminAPI string
+	adminKey        string
 	events          *EventStore
 }
 
-func NewServer(supabase *SupabaseClient, agentServerWS, agentConfigURL, defaultAdminAPI string) *Server {
+func NewServer(supabase *SupabaseClient, agentServerWS, agentConfigURL, defaultAdminAPI, adminKey string) *Server {
 	return &Server{
 		supabase:        supabase,
 		agentServerWS:   strings.TrimSpace(agentServerWS),
 		agentConfigURL:  strings.TrimSpace(agentConfigURL),
 		defaultAdminAPI: strings.TrimSpace(defaultAdminAPI),
+		adminKey:        strings.TrimSpace(adminKey),
 		events:          NewEventStore(2000),
 	}
 }
@@ -45,6 +47,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/sessions/register", s.handleSessionRegister)
 	mux.HandleFunc("/api/sessions/add-route", s.handleSessionAddRoute)
 	mux.HandleFunc("/api/tunnels/", s.handleTunnelByID)
+	mux.HandleFunc("/api/admin/tunnels/", s.handleAdminTunnelByID)
+	mux.HandleFunc("/api/admin/routes/", s.handleAdminRouteByID)
 	mux.HandleFunc("/api/logs", s.handleLogs)
 	mux.HandleFunc("/agent/routes", s.handleAgentRoutes)
 	mux.HandleFunc("/api/portal/login", s.handlePortalLogin)
@@ -219,14 +223,6 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"route": route})
 }
 
-type registerSessionRequest struct {
-	UserID     string `json:"user_id"`
-	Project    string `json:"project"`
-	Target     string `json:"target"`
-	BaseDomain string `json:"base_domain"`
-	Subdomain  string `json:"subdomain,omitempty"`
-	Enabled    *bool  `json:"enabled,omitempty"`
-}
 
 func (s *Server) handleSessionRegister(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -234,7 +230,7 @@ func (s *Server) handleSessionRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req registerSessionRequest
+	var req RegisterSessionRequest
 	if err := decodeJSON(r.Body, &req); err != nil {
 		errorJSON(w, http.StatusBadRequest, "invalid json")
 		return
@@ -291,14 +287,37 @@ func (s *Server) handleSessionRegister(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	// Idempotent registration: delete any existing tunnel for the same owner+project before creating.
-	if userID != "" && projectKey != "" {
-		if err := s.supabase.DeleteTunnelsByProjectKey(ctx, userID, projectKey); err != nil {
-			s.events.Add("warn", "session.register.cleanup_failed", "", err.Error())
-		}
+	// Check if tunnel already exists and handle admin_key
+	isAdminAuthed := false
+	if strings.TrimSpace(req.AdminKey) != "" {
+		isAdminAuthed = (req.AdminKey == s.adminKey)
 	}
 
-	tunnel, err := s.supabase.CreateTunnelWithMeta(ctx, tunnelName, token, userID, projectKey)
+	if userID != "" && projectKey != "" {
+		existing, err := s.supabase.GetTunnelByOwnerAndProject(ctx, userID, projectKey)
+		if err == nil {
+			// Tunnel already exists
+			if isAdminAuthed {
+				// Admin authenticated, allow idempotent registration
+				if err := s.supabase.DeleteTunnelByID(ctx, existing.ID); err != nil {
+					s.events.Add("warn", "session.register.cleanup_failed", existing.ID, err.Error())
+				}
+			} else {
+				// No admin auth, reject with conflict
+				errorJSON(w, http.StatusConflict, "tunnel already exists for this user and project, use admin_key to override")
+				s.events.Add("warn", "session.register.conflict", "", fmt.Sprintf("duplicate for %s/%s", userID, projectKey))
+				return
+			}
+		} else if !errors.Is(err, ErrNotFound) {
+			// Database error
+			errorJSON(w, http.StatusBadGateway, "failed to check existing tunnel")
+			return
+		}
+		// else: tunnel doesn't exist, proceed with creation
+	}
+
+	tunnel, err := s.supabase.CreateTunnelWithMeta(ctx, tunnelName, token, userID, projectKey,
+		strings.TrimSpace(req.ClientIP), strings.TrimSpace(req.OSType), req.Metadata)
 	if err != nil {
 		errorJSON(w, http.StatusBadGateway, err.Error())
 		s.events.Add("error", "session.register.tunnel_failed", "", err.Error())
@@ -398,6 +417,107 @@ func (s *Server) handleDeleteAllTunnels(w http.ResponseWriter, r *http.Request) 
 	}
 	s.events.Add("info", "tunnel.delete_all", "", "all tunnels deleted")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleAdminTunnelByID handles admin operations on tunnels (DELETE)
+func (s *Server) handleAdminTunnelByID(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/admin/tunnels/")
+	tunnelID := strings.Trim(path, "/")
+	if tunnelID == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Verify admin authorization
+	if !s.isAdminAuthorized(r) {
+		errorJSON(w, http.StatusUnauthorized, "unauthorized")
+		s.events.Add("warn", "admin.delete_tunnel.unauthorized", tunnelID, "unauthorized delete attempt")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	if _, err := s.supabase.GetTunnelByID(ctx, tunnelID); err != nil {
+		errorJSON(w, http.StatusNotFound, "tunnel not found")
+		return
+	}
+	if err := s.supabase.DeleteTunnelByID(ctx, tunnelID); err != nil {
+		errorJSON(w, http.StatusBadGateway, err.Error())
+		s.events.Add("error", "admin.tunnel.delete.failed", tunnelID, err.Error())
+		return
+	}
+	s.events.Add("info", "admin.tunnel.deleted", tunnelID, "admin deleted tunnel and associated routes")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tunnel_id": tunnelID})
+}
+
+// handleAdminRouteByID handles admin operations on routes (DELETE)
+func (s *Server) handleAdminRouteByID(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/admin/routes/")
+	routeID := strings.Trim(path, "/")
+	if routeID == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Verify admin authorization
+	if !s.isAdminAuthorized(r) {
+		errorJSON(w, http.StatusUnauthorized, "unauthorized")
+		s.events.Add("warn", "admin.delete_route.unauthorized", routeID, "unauthorized delete attempt")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	if _, err := s.supabase.GetRouteByID(ctx, routeID); err != nil {
+		errorJSON(w, http.StatusNotFound, "route not found")
+		return
+	}
+	if err := s.supabase.DeleteRouteByID(ctx, routeID); err != nil {
+		errorJSON(w, http.StatusBadGateway, err.Error())
+		s.events.Add("error", "admin.route.delete.failed", routeID, err.Error())
+		return
+	}
+	s.events.Add("info", "admin.route.deleted", routeID, "admin deleted route")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "route_id": routeID})
+}
+
+// isAdminAuthorized checks if request is authorized for admin operations
+func (s *Server) isAdminAuthorized(r *http.Request) bool {
+	if s.adminKey == "" {
+		return false
+	}
+
+	// Try to read admin_key from request body
+	var req struct {
+		AdminKey string `json:"admin_key"`
+	}
+	_ = decodeJSON(r.Body, &req)
+	if strings.TrimSpace(req.AdminKey) == s.adminKey {
+		return true
+	}
+
+	// Try to read admin_key from Authorization header (format: "Bearer {key}")
+	authHeader := r.Header.Get("Authorization")
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		key := strings.TrimPrefix(authHeader, "Bearer ")
+		if strings.TrimSpace(key) == s.adminKey {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (s *Server) handleListTunnelRoutes(w http.ResponseWriter, r *http.Request, tunnelID string) {

@@ -52,10 +52,10 @@ func (c *SupabaseClient) ListTunnels(ctx context.Context) ([]Tunnel, error) {
 }
 
 func (c *SupabaseClient) CreateTunnel(ctx context.Context, name, token string) (Tunnel, error) {
-	return c.CreateTunnelWithMeta(ctx, name, token, "", "")
+	return c.CreateTunnelWithMeta(ctx, name, token, "", "", "", "", nil)
 }
 
-func (c *SupabaseClient) CreateTunnelWithMeta(ctx context.Context, name, token, ownerID, projectKey string) (Tunnel, error) {
+func (c *SupabaseClient) CreateTunnelWithMeta(ctx context.Context, name, token, ownerID, projectKey, clientIP, osType string, metadata map[string]any) (Tunnel, error) {
 	basePayload := map[string]any{
 		"name":       name,
 		"token_hash": token,
@@ -73,9 +73,21 @@ func (c *SupabaseClient) CreateTunnelWithMeta(ctx context.Context, name, token, 
 		useMeta = true
 		payload["project_key"] = strings.TrimSpace(projectKey)
 	}
+	if strings.TrimSpace(clientIP) != "" {
+		useMeta = true
+		payload["client_ip"] = strings.TrimSpace(clientIP)
+	}
+	if strings.TrimSpace(osType) != "" {
+		useMeta = true
+		payload["os_type"] = strings.TrimSpace(osType)
+	}
+	if metadata != nil && len(metadata) > 0 {
+		useMeta = true
+		payload["metadata"] = metadata
+	}
 
 	query := url.Values{}
-	query.Set("select", "id,name,token:token_hash,created_at")
+	query.Set("select", "id,name,token:token_hash,client_ip,os_type,metadata,status,created_at,updated_at")
 
 	headers := map[string]string{
 		"Prefer": "return=representation",
@@ -323,6 +335,32 @@ func (c *SupabaseClient) ListEnabledProtocolRoutesByTunnel(ctx context.Context, 
 		return nil, err
 	}
 	return rows, nil
+}
+
+func (c *SupabaseClient) DeleteRouteByID(ctx context.Context, routeID string) error {
+	query := url.Values{}
+	query.Set("id", "eq."+routeID)
+	headers := map[string]string{
+		"Prefer": "return=minimal",
+	}
+	return c.requestJSON(ctx, http.MethodDelete, "/rest/v1/tunnel_routes", query, headers, nil, nil)
+}
+
+func (c *SupabaseClient) GetTunnelByOwnerAndProject(ctx context.Context, ownerID, projectKey string) (Tunnel, error) {
+	query := url.Values{}
+	query.Set("select", "id,name,token:token_hash,owner_id,project_key,client_ip,os_type,metadata,status,created_at,updated_at")
+	query.Set("owner_id", "eq."+ownerID)
+	query.Set("project_key", "eq."+projectKey)
+	query.Set("limit", "1")
+
+	var rows []Tunnel
+	if err := c.requestJSON(ctx, http.MethodGet, "/rest/v1/tunnel_instances", query, nil, nil, &rows); err != nil {
+		return Tunnel{}, err
+	}
+	if len(rows) == 0 {
+		return Tunnel{}, ErrNotFound
+	}
+	return rows[0], nil
 }
 
 func (c *SupabaseClient) requestJSON(ctx context.Context, method, path string, query url.Values, extraHeaders map[string]string, payload any, out any) error {
