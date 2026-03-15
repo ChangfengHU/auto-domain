@@ -9,9 +9,9 @@
 ## ✨ 核心功能
 
 ### 🚀 快速域名分配
-- **一句话分配域名** - 无需启动项目，只需提供项目名和端口
-- **自动域名生成** - 智能避免冲突，随机后缀确保唯一性
-- **即刻生效** - 分配完成立即可访问
+- **一句话分配域名** - 只需提供项目名和端口；注册后需启动本地 Agent 才能生效
+- **固定二级域名** - 默认使用 `project.base_domain`，也支持显式传 `subdomain`
+- **即刻生效** - 启动本地 Agent 后即可访问
 
 ### 🔐 用户自主管理
 - **Tunnel ID 登录** - 用户用分配时获得的 Tunnel ID 登录，无需记住密码
@@ -78,6 +78,12 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ChangfengHU/auto-domain/main
 给我的 myapp 项目分配一个公网域名，它在 localhost:3000 运行
 ```
 
+也可以查看公开接入文档：
+
+```text
+https://domain.vyibc.com/api-docs
+```
+
 ---
 
 ### 方式 1：自然语言 Skill（推荐）
@@ -99,8 +105,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ChangfengHU/auto-domain/main
 **Skill 会自动：**
 1. 提取项目名、端口、用户 ID
 2. 调用 API 分配域名
-3. 返回公网地址和 Tunnel ID
-4. 告诉你如何管理这个域名
+3. 返回公网地址、Tunnel ID 和 Agent Command
+4. 提示启动本地 Agent，并告诉你如何管理这个域名
 
 ### 方式 2：命令行脚本
 
@@ -115,13 +121,38 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ChangfengHU/auto-domain/main
 ### 方式 3：直接调用 API
 
 ```bash
-curl -X POST 'https://domain.vyibc.com/control/api/sessions/register' \
+curl -X POST 'https://domain.vyibc.com/api/sessions/register' \
   -H 'Content-Type: application/json' \
   -d '{
     "user_id": "alice",
     "project": "myapp",
     "target": "127.0.0.1:3000",
     "base_domain": "vyibc.com"
+  }'
+```
+
+说明：
+- 传了 `subdomain` 时，会注册成固定二级域名，例如 `myapp.vyibc.com`
+- 没传 `subdomain` 时，会直接使用 `project`，例如 `myapp.vyibc.com`
+- 普通用户如果该固定二级域名已存在，会自动回退成带随机后缀的新域名
+- 管理员携带 `admin_key` 时，可以覆盖已存在的固定二级域名
+- 如果想让同一台机器永远只跑 1 个 agent，第一次注册后请保存返回的 `tunnel.id` 和 `tunnel.token`
+- 统一推荐保存到 `~/.tunneling/machine_state.json`
+- 后续再注册其他本地服务时，把 `tunnel_id` 和 `tunnel_token` 一起传给 `/api/sessions/register`，接口就会复用已有 tunnel，只新增 route
+
+复用同一个 tunnel 的示例：
+
+```bash
+curl -X POST 'https://domain.vyibc.com/api/sessions/register' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "user_id": "alice",
+    "project": "admin",
+    "subdomain": "admin",
+    "target": "127.0.0.1:3001",
+    "base_domain": "vyibc.com",
+    "tunnel_id": "68bb4bf9-9a6f-4e21-8aa5-3cfb7dc1cfcb",
+    "tunnel_token": "dHGAFkpuQx610ShnxCqwbBoJFGHj5y70EDv7RsN26Ds"
   }'
 ```
 
@@ -136,7 +167,7 @@ curl -X POST 'https://domain.vyibc.com/control/api/sessions/register' \
 ```
 ✅ 域名分配成功！
 
-🌐 公网地址：http://myapp-a8vau2.vyibc.com
+🌐 公网地址：http://myapp.vyibc.com
 
 📌 Tunnel 信息：
 - Tunnel ID: 68bb4bf9-9a6f-4e21-8aa5-3cfb7dc1cfcb
@@ -158,7 +189,7 @@ python -m http.server 5318  # 如果端口是 5318
 直接访问分配的公网地址：
 
 ```
-https://myapp-a8vau2.vyibc.com
+https://myapp.vyibc.com
 ```
 
 ### 第四步：管理域名（可选）
@@ -201,6 +232,7 @@ https://domain.vyibc.com/login
 
 | 文档 | 说明 |
 |------|------|
+| [公开接入文档](https://domain.vyibc.com/api-docs) | 免登录查看的对外接入文档，适合用户/SDK/脚本调用 |
 | [allocate-domain Skill 使用指南](./docs/ALLOCATE_DOMAIN_GUIDE.md) | Skill 的完整使用文档、参数说明、常见问题 |
 | [项目接入指南](./docs/PROJECT_ONBOARDING.md) | 开发者集成本项目的指南 |
 | [本地使用指南](./docs/local-usage.md) | 本地开发和测试的指南 |
@@ -260,33 +292,16 @@ cd tunneling/skills/allocate-domain
 
 ## 📦 部署
 
-### Docker 快速部署
+当前实际保留并验证可用的部署方式只有一套：
 
-```bash
-# 1. 拉取代码
-git clone https://github.com/ChangfengHU/tunneling.git
-cd tunneling
+- 本地编译 `control` / `server`
+- `rsync` 同步到远程 `/opt/tunneling`
+- 远程重启 `systemd`
+- 远程 `docker build` 并重建 `console`
 
-# 2. 构建 Console 镜像
-docker build -t tunneling-console:latest console/
+详细说明见：
 
-# 3. 运行 Console
-docker run -d \
-  --name tunneling-console \
-  --restart always \
-  -p 3002:3002 \
-  -e PORT=3002 \
-  -e CONTROL_API_BASE=http://127.0.0.1:18100 \
-  tunneling-console:latest
-
-# 4. 访问
-# 超管登录：http://localhost:3002/adminlogin
-# 用户登录：http://localhost:3002/login
-```
-
-### 生产部署
-
-参考 `deploy/docker/` 和 `deploy/systemd/` 目录的配置示例。
+- [远程部署文档](./docs/REMOTE_DEPLOYMENT.md)
 
 ---
 
@@ -304,7 +319,7 @@ docker run -d \
 ### 分配域名（无需认证）
 
 ```bash
-curl -X POST 'https://domain.vyibc.com/control/api/sessions/register' \
+curl -X POST 'https://domain.vyibc.com/api/sessions/register' \
   -H 'Content-Type: application/json' \
   -d '{
     "user_id": "alice",
@@ -315,13 +330,13 @@ curl -X POST 'https://domain.vyibc.com/control/api/sessions/register' \
 
 # 返回
 {
-  "public_url": "http://myapp-a8vau2.vyibc.com",
+  "public_url": "http://myapp.vyibc.com",
   "tunnel": {
     "id": "68bb4bf9-9a6f-4e21-8aa5-3cfb7dc1cfcb",
     "token": "dHGAFkpuQx610ShnxCqwbBoJFGHj5y70EDv7RsN26Ds"
   },
   "route": {
-    "hostname": "myapp-a8vau2.vyibc.com",
+    "hostname": "myapp.vyibc.com",
     "target": "127.0.0.1:3000"
   }
 }
@@ -330,7 +345,7 @@ curl -X POST 'https://domain.vyibc.com/control/api/sessions/register' \
 ### 查询 Tunnel（需要 Tunnel Token）
 
 ```bash
-curl 'https://domain.vyibc.com/control/api/tunnels/68bb4bf9-9a6f-4e21-8aa5-3cfb7dc1cfcb' \
+curl 'https://domain.vyibc.com/api/tunnels/68bb4bf9-9a6f-4e21-8aa5-3cfb7dc1cfcb' \
   -H "Authorization: Bearer dHGAFkpuQx610ShnxCqwbBoJFGHj5y70EDv7RsN26Ds"
 ```
 

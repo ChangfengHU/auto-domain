@@ -1,635 +1,1010 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { Plus, Server, XCircle, Search, Settings as SettingsIcon, Trash2, Copy, Check, Play, ShieldAlert, Pencil, X, AlertTriangle } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import {
+    AlertTriangle,
+    CheckCircle2,
+    Copy,
+    Pencil,
+    Plus,
+    RefreshCw,
+    Search,
+    Server,
+    ShieldAlert,
+    Trash2,
+    X,
+    XCircle,
+} from 'lucide-react'
 import { createClient } from '@/utils/supabase/client'
 
+type TunnelRoute = {
+    id: string
+    tunnel_id: string
+    hostname: string
+    target: string
+    is_enabled: boolean
+}
+
+type Tunnel = {
+    id: string
+    name: string
+    status: 'online' | 'offline'
+    created_at: string
+    updated_at?: string
+    token_hash: string
+    owner_id?: string | null
+    project_key?: string | null
+    client_ip?: string | null
+    os_type?: string | null
+    tunnel_routes: TunnelRoute[]
+}
+
+type TunnelForm = {
+    id?: string
+    name: string
+    token_hash: string
+    owner_id: string
+    project_key: string
+    status: 'online' | 'offline'
+    client_ip: string
+    os_type: string
+}
+
+type RouteForm = {
+    id?: string
+    tunnel_id: string
+    hostname: string
+    target: string
+    is_enabled: boolean
+}
+
+type ConfirmState =
+    | {
+          title: string
+          description: string
+          action: () => Promise<void>
+      }
+    | null
+
+const EMPTY_TUNNEL_FORM: TunnelForm = {
+    name: '',
+    token_hash: '',
+    owner_id: '',
+    project_key: '',
+    status: 'offline',
+    client_ip: '',
+    os_type: '',
+}
+
+const EMPTY_ROUTE_FORM: RouteForm = {
+    tunnel_id: '',
+    hostname: '',
+    target: '127.0.0.1:3000',
+    is_enabled: true,
+}
+
+function normalizeTunnel(row: any): Tunnel {
+    return {
+        id: row.id,
+        name: row.name,
+        status: row.status === 'online' ? 'online' : 'offline',
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        token_hash: row.token_hash,
+        owner_id: row.owner_id,
+        project_key: row.project_key,
+        client_ip: row.client_ip,
+        os_type: row.os_type,
+        tunnel_routes: Array.isArray(row.tunnel_routes) ? row.tunnel_routes : [],
+    }
+}
+
+function formatDate(value?: string | null) {
+    if (!value) return '—'
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return '—'
+    return date.toLocaleString()
+}
+
+function routeCount(tunnel: Tunnel) {
+    return tunnel.tunnel_routes.length
+}
+
+function createTokenSeed() {
+    return globalThis.crypto?.randomUUID?.().replace(/-/g, '') ?? `${Date.now()}${Math.random().toString(16).slice(2)}`
+}
+
 export default function TunnelsPage() {
-    const [selectedTunnel, setSelectedTunnel] = useState<any>(null)
-    const [tunnels, setTunnels] = useState<any[]>([])
-    const [loading, setLoading] = useState(true)
-    const [isAdmin, setIsAdmin] = useState(false)
-    const [copiedId, setCopiedId] = useState(false)
-    const [editingRouteId, setEditingRouteId] = useState<string | null>(null)
-    const [editingHostname, setEditingHostname] = useState('')
-    const [editError, setEditError] = useState('')
-    const [editSaving, setEditSaving] = useState(false)
-    const [deletingTunnelId, setDeletingTunnelId] = useState<string | null>(null)
-    const [deletingRouteId, setDeletingRouteId] = useState<string | null>(null)
-    const [deleteConfirming, setDeleteConfirming] = useState(false)
-    const [deleteError, setDeleteError] = useState('')
-    const [currentPage, setCurrentPage] = useState(1)
-    const [searchQuery, setSearchQuery] = useState('')
-    const itemsPerPage = 10
     const supabase = createClient()
 
-    const copyTunnelId = (id: string) => {
-        navigator.clipboard.writeText(id)
-        setCopiedId(true)
-        setTimeout(() => setCopiedId(false), 1500)
-    }
+    const [tunnels, setTunnels] = useState<Tunnel[]>([])
+    const [loading, setLoading] = useState(true)
+    const [refreshing, setRefreshing] = useState(false)
+    const [isAdmin, setIsAdmin] = useState(false)
+    const [searchQuery, setSearchQuery] = useState('')
+    const [currentPage, setCurrentPage] = useState(1)
+    const [selectedTunnelId, setSelectedTunnelId] = useState<string | null>(null)
+    const [selectedTunnelIds, setSelectedTunnelIds] = useState<string[]>([])
+    const [selectedRouteIds, setSelectedRouteIds] = useState<string[]>([])
+    const [pageError, setPageError] = useState('')
+    const [copiedTunnelId, setCopiedTunnelId] = useState<string | null>(null)
 
-    const startEditRoute = (route: any) => {
-        setEditingRouteId(route.id)
-        setEditingHostname(route.hostname)
-        setEditError('')
-    }
+    const [tunnelModalOpen, setTunnelModalOpen] = useState(false)
+    const [routeModalOpen, setRouteModalOpen] = useState(false)
+    const [tunnelForm, setTunnelForm] = useState<TunnelForm>(EMPTY_TUNNEL_FORM)
+    const [routeForm, setRouteForm] = useState<RouteForm>(EMPTY_ROUTE_FORM)
+    const [formError, setFormError] = useState('')
+    const [submitting, setSubmitting] = useState(false)
+    const [confirmState, setConfirmState] = useState<ConfirmState>(null)
+    const itemsPerPage = 10
 
-    const cancelEditRoute = () => {
-        setEditingRouteId(null)
-        setEditingHostname('')
-        setEditError('')
-    }
+    const selectedTunnel = tunnels.find((item) => item.id === selectedTunnelId) ?? null
 
-    const saveEditRoute = async (routeId: string) => {
-        setEditSaving(true)
-        setEditError('')
-        try {
-            const res = await fetch(`/api/admin/routes/${routeId}`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ hostname: editingHostname }),
-            })
-            const data = await res.json()
-            if (!res.ok) {
-                setEditError(data.error ?? '保存失败')
-                return
-            }
-            // Update local state
-            setTunnels(prev => prev.map(t => ({
-                ...t,
-                tunnel_routes: t.tunnel_routes.map((r: any) =>
-                    r.id === routeId ? { ...r, hostname: data.route.hostname } : r
-                ),
-            })))
-            if (selectedTunnel) {
-                setSelectedTunnel((prev: any) => ({
-                    ...prev,
-                    tunnel_routes: prev.tunnel_routes.map((r: any) =>
-                        r.id === routeId ? { ...r, hostname: data.route.hostname } : r
-                    ),
-                }))
-            }
-            setEditingRouteId(null)
-        } catch {
-            setEditError('网络错误，请重试')
-        } finally {
-            setEditSaving(false)
+    const filteredTunnels = tunnels.filter((tunnel) => {
+        if (!searchQuery.trim()) return true
+        const keyword = searchQuery.trim().toLowerCase()
+        return (
+            tunnel.id.toLowerCase().includes(keyword) ||
+            tunnel.name.toLowerCase().includes(keyword) ||
+            (tunnel.owner_id ?? '').toLowerCase().includes(keyword) ||
+            (tunnel.project_key ?? '').toLowerCase().includes(keyword) ||
+            tunnel.tunnel_routes.some((route) => route.hostname.toLowerCase().includes(keyword))
+        )
+    })
+
+    const totalPages = Math.max(1, Math.ceil(filteredTunnels.length / itemsPerPage))
+    const currentPageSafe = Math.min(currentPage, totalPages)
+    const paginatedTunnels = filteredTunnels.slice((currentPageSafe - 1) * itemsPerPage, currentPageSafe * itemsPerPage)
+
+    const loadData = async (preferredTunnelId?: string | null) => {
+        setPageError('')
+        const { data: authData } = await supabase.auth.getUser()
+        const user = authData.user
+        if (!user) {
+            setIsAdmin(false)
+            setTunnels([])
+            setSelectedTunnelId(null)
+            setPageError('当前未登录，无法读取隧道数据。')
+            return
         }
-    }
 
-    const toggleRouteEnabled = async (routeId: string, enabled: boolean) => {
-        try {
-            const res = await fetch(`/api/portal/routes/${routeId}`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ is_enabled: enabled }),
-            })
-            if (!res.ok) {
-                const data = await res.json()
-                setDeleteError(data.error ?? '更新失败')
-                return
-            }
-            // Update local state
-            setTunnels(prev => prev.map(t => ({
-                ...t,
-                tunnel_routes: t.tunnel_routes.map((r: any) =>
-                    r.id === routeId ? { ...r, is_enabled: enabled } : r
-                ),
-            })))
-            if (selectedTunnel) {
-                setSelectedTunnel((prev: any) => ({
-                    ...prev,
-                    tunnel_routes: prev.tunnel_routes.map((r: any) =>
-                        r.id === routeId ? { ...r, is_enabled: enabled } : r
-                    ),
-                }))
-            }
-        } catch {
-            setDeleteError('网络错误，请重试')
-        }
-    }
+        const { data: profile, error: profileError } = await supabase
+            .from('tunnel_profiles')
+            .select('role')
+            .eq('id', user.id)
+            .single()
 
-    const deleteRoute = async (routeId: string) => {
-        setDeleteError('')
-        try {
-            const res = await fetch(`/api/admin/routes/${routeId}`, {
-                method: 'DELETE',
-                headers: { 'Content-Type': 'application/json' },
-            })
-            if (!res.ok) {
-                const data = await res.json()
-                setDeleteError(data.error ?? '删除失败')
-                return
-            }
-            // Update local state - remove the route
-            setTunnels(prev => prev.map(t => ({
-                ...t,
-                tunnel_routes: t.tunnel_routes.filter((r: any) => r.id !== routeId),
-                routes: (t.tunnel_routes?.length || 0) - 1,
-            })))
-            if (selectedTunnel) {
-                const updatedRoutes = selectedTunnel.tunnel_routes.filter((r: any) => r.id !== routeId)
-                setSelectedTunnel((prev: any) => ({
-                    ...prev,
-                    tunnel_routes: updatedRoutes,
-                    routes: updatedRoutes.length,
-                }))
-            }
-            setDeleteConfirming(false)
-            setDeletingRouteId(null)
-        } catch {
-            setDeleteError('网络错误，请重试')
+        if (profileError) {
+            setPageError(profileError.message)
+            setIsAdmin(false)
+            return
         }
-    }
 
-    const deleteTunnel = async (tunnelId: string) => {
-        setDeleteError('')
-        try {
-            const res = await fetch(`/api/admin/tunnels/${tunnelId}`, {
-                method: 'DELETE',
-                headers: { 'Content-Type': 'application/json' },
-            })
-            if (!res.ok) {
-                const data = await res.json()
-                setDeleteError(data.error ?? '删除失败')
-                return
-            }
-            // Update local state - remove the tunnel
-            setTunnels(prev => prev.filter(t => t.id !== tunnelId))
-            setSelectedTunnel(null)
-            setDeleteConfirming(false)
-            setDeletingTunnelId(null)
-        } catch {
-            setDeleteError('网络错误，请重试')
+        const admin = profile?.role === 'admin' || profile?.role === 'super_admin'
+        setIsAdmin(admin)
+        if (!admin) {
+            setPageError('当前账号不是 admin / super_admin。')
+            setTunnels([])
+            setSelectedTunnelId(null)
+            return
         }
+
+        const { data, error } = await supabase
+            .from('tunnel_instances')
+            .select(`
+                id, name, status, created_at, updated_at, token_hash, owner_id, project_key, client_ip, os_type,
+                tunnel_routes ( id, tunnel_id, hostname, target, is_enabled )
+            `)
+            .order('created_at', { ascending: false })
+
+        if (error) {
+            setPageError(error.message)
+            return
+        }
+
+        const nextTunnels = (data ?? []).map(normalizeTunnel)
+        setTunnels(nextTunnels)
+
+        const preferred = preferredTunnelId ?? selectedTunnelId
+        const nextSelected = preferred && nextTunnels.some((item) => item.id === preferred)
+            ? preferred
+            : (nextTunnels[0]?.id ?? null)
+        setSelectedTunnelId(nextSelected)
+        setSelectedTunnelIds((prev) => prev.filter((id) => nextTunnels.some((item) => item.id === id)))
+        setSelectedRouteIds((prev) => {
+            const routes = nextTunnels.find((item) => item.id === nextSelected)?.tunnel_routes ?? []
+            return prev.filter((id) => routes.some((route) => route.id === id))
+        })
     }
 
     useEffect(() => {
-        const init = async () => {
+        let active = true
+        ;(async () => {
             setLoading(true)
-            const { data: { user } } = await supabase.auth.getUser()
-            let admin = false
-            if (user) {
-                const { data: profile } = await supabase
-                    .from('tunnel_profiles')
-                    .select('role')
-                    .eq('id', user.id)
-                    .single()
-                admin = profile?.role === 'admin' || profile?.role === 'super_admin'
-                setIsAdmin(admin)
+            try {
+                if (active) {
+                    await loadData()
+                }
+            } finally {
+                if (active) setLoading(false)
             }
-
-            const { data, error } = await supabase
-                .from('tunnel_instances')
-                .select(`
-                    id, name, status, created_at, updated_at, token_hash, owner_id, project_key, client_ip, os_type,
-                    tunnel_routes ( id, hostname, target, is_enabled )
-                `)
-                .order('created_at', { ascending: false })
-
-            if (!error && data) {
-                setTunnels(data.map(t => ({
-                    ...t,
-                    routes: t.tunnel_routes?.length || 0,
-                    tunnel_routes: t.tunnel_routes || [],
-                    created_at: new Date(t.created_at).toISOString().split('T')[0]
-                })))
-            }
-            setLoading(false)
+        })()
+        return () => {
+            active = false
         }
-        init()
-    }, [supabase])
+        // Initial load only. Subsequent reloads use refresh().
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [])
+
+    useEffect(() => {
+        setCurrentPage((prev) => Math.min(prev, totalPages))
+    }, [totalPages])
+
+    useEffect(() => {
+        setSelectedRouteIds([])
+    }, [selectedTunnelId])
+
+    async function refresh(preferredTunnelId?: string | null) {
+        setRefreshing(true)
+        try {
+            await loadData(preferredTunnelId)
+        } finally {
+            setRefreshing(false)
+        }
+    }
+
+    function openCreateTunnel() {
+        setTunnelForm({
+            ...EMPTY_TUNNEL_FORM,
+            token_hash: createTokenSeed(),
+        })
+        setFormError('')
+        setTunnelModalOpen(true)
+    }
+
+    function openEditTunnel(tunnel: Tunnel) {
+        setTunnelForm({
+            id: tunnel.id,
+            name: tunnel.name,
+            token_hash: tunnel.token_hash,
+            owner_id: tunnel.owner_id ?? '',
+            project_key: tunnel.project_key ?? '',
+            status: tunnel.status,
+            client_ip: tunnel.client_ip ?? '',
+            os_type: tunnel.os_type ?? '',
+        })
+        setFormError('')
+        setTunnelModalOpen(true)
+    }
+
+    function openCreateRoute() {
+        if (!selectedTunnel) return
+        setRouteForm({
+            ...EMPTY_ROUTE_FORM,
+            tunnel_id: selectedTunnel.id,
+        })
+        setFormError('')
+        setRouteModalOpen(true)
+    }
+
+    function openEditRoute(route: TunnelRoute) {
+        setRouteForm({
+            id: route.id,
+            tunnel_id: route.tunnel_id,
+            hostname: route.hostname,
+            target: route.target,
+            is_enabled: route.is_enabled,
+        })
+        setFormError('')
+        setRouteModalOpen(true)
+    }
+
+    async function submitTunnelForm() {
+        setSubmitting(true)
+        setFormError('')
+        try {
+            const method = tunnelForm.id ? 'PATCH' : 'POST'
+            const url = tunnelForm.id ? `/api/admin/tunnels/${tunnelForm.id}` : '/api/admin/tunnels'
+            const response = await fetch(url, {
+                method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(tunnelForm),
+            })
+            const data = await response.json()
+            if (!response.ok) {
+                setFormError(data.error ?? '保存 tunnel 失败')
+                return
+            }
+            setTunnelModalOpen(false)
+            await refresh(tunnelForm.id ?? data.tunnel?.id ?? selectedTunnelId)
+        } catch {
+            setFormError('网络错误，请稍后重试')
+        } finally {
+            setSubmitting(false)
+        }
+    }
+
+    async function submitRouteForm() {
+        setSubmitting(true)
+        setFormError('')
+        try {
+            const method = routeForm.id ? 'PATCH' : 'POST'
+            const url = routeForm.id ? `/api/admin/routes/${routeForm.id}` : '/api/admin/routes'
+            const response = await fetch(url, {
+                method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(routeForm),
+            })
+            const data = await response.json()
+            if (!response.ok) {
+                setFormError(data.error ?? '保存 route 失败')
+                return
+            }
+            setRouteModalOpen(false)
+            await refresh(routeForm.tunnel_id)
+        } catch {
+            setFormError('网络错误，请稍后重试')
+        } finally {
+            setSubmitting(false)
+        }
+    }
+
+    async function updateRoute(routeId: string, patch: Partial<RouteForm>) {
+        setPageError('')
+        const response = await fetch(`/api/admin/routes/${routeId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(patch),
+        })
+        const data = await response.json()
+        if (!response.ok) {
+            throw new Error(data.error ?? '更新 route 失败')
+        }
+    }
+
+    async function deleteSingleRoute(routeId: string) {
+        const response = await fetch(`/api/admin/routes/${routeId}`, {
+            method: 'DELETE',
+        })
+        const data = await response.json().catch(() => ({}))
+        if (!response.ok) {
+            throw new Error(data.error ?? '删除 route 失败')
+        }
+        await refresh(selectedTunnelId)
+    }
+
+    async function deleteSingleTunnel(tunnelId: string) {
+        const response = await fetch(`/api/admin/tunnels/${tunnelId}`, {
+            method: 'DELETE',
+        })
+        const data = await response.json().catch(() => ({}))
+        if (!response.ok) {
+            throw new Error(data.error ?? '删除 tunnel 失败')
+        }
+        await refresh(selectedTunnelId === tunnelId ? null : selectedTunnelId)
+    }
+
+    async function bulkDelete(kind: 'tunnels' | 'routes', ids: string[]) {
+        const url = kind === 'tunnels' ? '/api/admin/tunnels' : '/api/admin/routes'
+        const response = await fetch(url, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids }),
+        })
+        const data = await response.json().catch(() => ({}))
+        if (!response.ok) {
+            throw new Error(data.error ?? '批量删除失败')
+        }
+        if (kind === 'tunnels') {
+            setSelectedTunnelIds([])
+            await refresh(null)
+        } else {
+            setSelectedRouteIds([])
+            await refresh(selectedTunnelId)
+        }
+    }
+
+    function toggleTunnelSelection(tunnelId: string) {
+        setSelectedTunnelIds((prev) => (prev.includes(tunnelId) ? prev.filter((id) => id !== tunnelId) : [...prev, tunnelId]))
+    }
+
+    function toggleRouteSelection(routeId: string) {
+        setSelectedRouteIds((prev) => (prev.includes(routeId) ? prev.filter((id) => id !== routeId) : [...prev, routeId]))
+    }
+
+    function copyTunnelId(id: string) {
+        navigator.clipboard.writeText(id)
+        setCopiedTunnelId(id)
+        setTimeout(() => setCopiedTunnelId(null), 1200)
+    }
+
+    async function runAction(action: () => Promise<void>) {
+        setSubmitting(true)
+        setPageError('')
+        try {
+            await action()
+            setConfirmState(null)
+        } catch (error) {
+            setPageError(error instanceof Error ? error.message : '操作失败')
+        } finally {
+            setSubmitting(false)
+        }
+    }
 
     return (
-        <div className="flex-1 flex flex-col h-[calc(100vh-8rem)]">
-            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
+        <div className="flex-1 flex flex-col gap-6">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
                 <div>
                     <h1 className="text-2xl font-bold text-gray-900 flex items-center">
                         <Server className="h-6 w-6 text-indigo-600 mr-2" />
-                        Tunnels & Routes
+                        Tunnel Admin
                     </h1>
-                    <p className="mt-1 text-sm text-gray-500">Manage your active network tunnels and domain mapping routes.</p>
+                    <p className="mt-1 text-sm text-gray-500">超管平台统一管理 Tunnel / Route，支持新增、编辑、单删和批量一键删除。</p>
                 </div>
-                <button className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
-                    <Plus className="h-4 w-4 mr-2" /> New Tunnel
-                </button>
+                <div className="flex flex-wrap items-center gap-3">
+                    <button
+                        onClick={() => refresh(selectedTunnelId)}
+                        className="inline-flex items-center rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                    >
+                        <RefreshCw className={`mr-2 h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
+                        刷新
+                    </button>
+                    <button
+                        onClick={openCreateTunnel}
+                        className="inline-flex items-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+                    >
+                        <Plus className="mr-2 h-4 w-4" />
+                        新建 Tunnel
+                    </button>
+                </div>
             </div>
 
             {isAdmin && (
-                <div className="mb-4 flex items-center gap-2 bg-purple-50 border border-purple-200 rounded-lg px-4 py-2.5 text-sm text-purple-800">
-                    <ShieldAlert className="h-4 w-4 text-purple-600 flex-shrink-0" />
-                    <span><strong>Admin View</strong> — Showing all tunnels from all users including owner and mapping details.</span>
+                <div className="flex items-center gap-2 rounded-xl border border-purple-200 bg-purple-50 px-4 py-3 text-sm text-purple-800">
+                    <ShieldAlert className="h-4 w-4 flex-shrink-0 text-purple-600" />
+                    <span>当前为管理员视图，增删改查都会直接作用于全部 tunnel 和 route 数据。</span>
                 </div>
             )}
 
-            <div className="bg-white shadow-sm rounded-xl overflow-hidden border border-gray-200 flex-1 flex flex-col">
-                <div className="p-4 border-b border-gray-200 bg-gray-50/50 flex flex-col sm:flex-row gap-4 justify-between items-center">
-                    <div className="relative w-full sm:w-96">
-                        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                            <Search className="h-4 w-4 text-gray-400" />
-                        </div>
-                        <input
-                            type="text"
-                            value={searchQuery}
-                            onChange={(e) => {
-                                setSearchQuery(e.target.value)
-                                setCurrentPage(1)
-                            }}
-                            className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md leading-5 bg-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                            placeholder="Search by ID, name, or domain..."
-                        />
-                    </div>
+            {pageError && (
+                <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                    {pageError}
                 </div>
+            )}
 
-                <div className="flex-1 overflow-auto">
-                    <table className="min-w-full divide-y divide-gray-200">
-                        <thead className="bg-gray-50 sticky top-0 z-10 shadow-sm shadow-gray-200/50">
-                            <tr>
-                                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Tunnel</th>
-                                {isAdmin && <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Owner / Project</th>}
-                                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
-                                {isAdmin && <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Client IP</th>}
-                                {isAdmin && <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Device</th>}
-                                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Routes</th>
-                                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Created</th>
-                                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">Action</th>
-                            </tr>
-                        </thead>
-                        <tbody className="bg-white divide-y divide-gray-200">
-                            {(() => {
-                                const filtered = tunnels.filter(t =>
-                                    searchQuery === '' ||
-                                    t.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                                    t.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                                    (t.tunnel_routes?.some((r: any) => r.hostname.toLowerCase().includes(searchQuery.toLowerCase())))
-                                )
-                                const total = filtered.length
-                                const start = (currentPage - 1) * itemsPerPage
-                                const paginated = filtered.slice(start, start + itemsPerPage)
-                                return paginated.map((t) => (
-                                <tr key={t.id} className="hover:bg-indigo-50/50 transition-colors cursor-pointer group" onClick={() => setSelectedTunnel(t)}>
-                                    <td className="px-6 py-4 whitespace-nowrap">
-                                        <div className="flex items-center">
-                                            <div className={`h-8 w-8 rounded-lg flex items-center justify-center mr-3 ${t.status === 'online' ? 'bg-emerald-100 text-emerald-600' : 'bg-gray-100 text-gray-500'}`}>
-                                                <Server className="h-4 w-4" />
-                                            </div>
-                                            <div>
-                                                <div className="text-sm font-bold text-gray-900 group-hover:text-indigo-600 transition-colors">{t.name}</div>
-                                                <div className="text-xs font-mono text-gray-500">{t.id}</div>
-                                            </div>
-                                        </div>
-                                    </td>
-                                    {isAdmin && (
-                                        <td className="px-6 py-4 whitespace-nowrap">
-                                            <div className="text-xs font-mono text-gray-600 truncate max-w-[160px]" title={t.owner_id}>{t.owner_id || <span className="text-gray-400">—</span>}</div>
-                                            {t.project_key && <div className="text-xs text-indigo-500 truncate max-w-[160px]">{t.project_key}</div>}
-                                        </td>
-                                    )}
-                                    <td className="px-6 py-4 whitespace-nowrap">
-                                        {t.status === 'online' ? (
-                                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800 border border-emerald-200">
-                                                <span className="w-1.5 h-1.5 mr-1.5 bg-emerald-500 rounded-full animate-pulse"></span> Online
-                                            </span>
-                                        ) : (
-                                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800 border border-gray-200">
-                                                <span className="w-1.5 h-1.5 mr-1.5 bg-gray-400 rounded-full"></span> Offline
-                                            </span>
-                                        )}
-                                    </td>
-                                    {isAdmin && (
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-600">
-                                            {t.client_ip || <span className="text-gray-400">—</span>}
-                                        </td>
-                                    )}
-                                    {isAdmin && (
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                                            {t.os_type ? (
-                                                <span className="inline-flex items-center px-2 py-1 rounded bg-blue-50 text-blue-700 text-xs font-medium">
-                                                    {t.os_type === 'mac' && '🍎 macOS'}
-                                                    {t.os_type === 'linux' && '🐧 Linux'}
-                                                    {t.os_type === 'windows' && '🪟 Windows'}
-                                                    {!['mac', 'linux', 'windows'].includes(t.os_type) && t.os_type}
-                                                </span>
-                                            ) : (
-                                                <span className="text-gray-400">—</span>
-                                            )}
-                                        </td>
-                                    )}
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                        <span className="inline-flex items-center font-semibold bg-gray-100 px-2 py-0.5 rounded text-gray-600">{t.routes}</span>
-                                    </td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{t.created_at}</td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                        <button onClick={(e) => { e.stopPropagation(); setSelectedTunnel(t) }} className="text-indigo-600 hover:text-indigo-900 bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-md transition-colors flex items-center ml-auto">
-                                            <SettingsIcon className="h-4 w-4 mr-1.5" /> Manage
-                                        </button>
-                                    </td>
-                                </tr>
-                            ))
-                            })()}
-                            {!loading && tunnels.length === 0 && (
+            <div className="grid gap-6 xl:grid-cols-[minmax(0,1.3fr)_minmax(360px,0.9fr)]">
+                <section className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
+                    <div className="flex flex-col gap-4 border-b border-gray-200 bg-gray-50/70 p-4">
+                        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                            <div className="relative w-full max-w-md">
+                                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                                <input
+                                    value={searchQuery}
+                                    onChange={(event) => {
+                                        setSearchQuery(event.target.value)
+                                        setCurrentPage(1)
+                                    }}
+                                    placeholder="按 Tunnel ID / 名称 / 域名搜索"
+                                    className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-3 text-sm text-gray-900 outline-none ring-0 placeholder:text-gray-400 focus:border-indigo-500"
+                                />
+                            </div>
+                            {selectedTunnelIds.length > 0 && (
+                                <button
+                                    onClick={() =>
+                                        setConfirmState({
+                                            title: `删除 ${selectedTunnelIds.length} 个 Tunnel？`,
+                                            description: '会连带删除这些 tunnel 下的全部 route，操作不可恢复。',
+                                            action: () => bulkDelete('tunnels', selectedTunnelIds),
+                                        })
+                                    }
+                                    className="inline-flex items-center rounded-lg border border-red-300 bg-red-50 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-100"
+                                >
+                                    <Trash2 className="mr-2 h-4 w-4" />
+                                    批量删除 Tunnel
+                                </button>
+                            )}
+                        </div>
+                    </div>
+
+                    <div className="overflow-auto">
+                        <table className="min-w-full divide-y divide-gray-200">
+                            <thead className="bg-gray-50">
                                 <tr>
-                                    <td colSpan={isAdmin ? 8 : 5} className="px-6 py-12 text-center text-sm text-gray-500">
-                                        <Server className="mx-auto h-12 w-12 text-gray-300 mb-3" />
-                                        <p className="font-semibold text-gray-900">No tunnels found</p>
-                                        <p className="mt-1">Get started by creating a new tunnel from the CLI or dashboard.</p>
-                                    </td>
+                                    <th className="px-4 py-3 text-left">
+                                        <input
+                                            type="checkbox"
+                                            checked={paginatedTunnels.length > 0 && paginatedTunnels.every((item) => selectedTunnelIds.includes(item.id))}
+                                            onChange={(event) => {
+                                                if (event.target.checked) {
+                                                    setSelectedTunnelIds(Array.from(new Set([...selectedTunnelIds, ...paginatedTunnels.map((item) => item.id)])))
+                                                } else {
+                                                    setSelectedTunnelIds((prev) => prev.filter((id) => !paginatedTunnels.some((item) => item.id === id)))
+                                                }
+                                            }}
+                                        />
+                                    </th>
+                                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">Tunnel</th>
+                                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">Owner / Project</th>
+                                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">Status</th>
+                                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">Routes</th>
+                                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">Created</th>
+                                    <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-gray-500">操作</th>
                                 </tr>
-                            )}
-                        </tbody>
-                    </table>
-                </div>
-
-                {/* Pagination */}
-                {tunnels.length > itemsPerPage && (
-                    <div className="px-6 py-4 border-t border-gray-200 bg-gray-50 flex items-center justify-between">
-                        <div className="text-sm text-gray-500">
-                            Showing <span className="font-semibold">{((currentPage - 1) * itemsPerPage) + 1}</span> to <span className="font-semibold">{Math.min(currentPage * itemsPerPage, tunnels.filter(t => searchQuery === '' || t.id.toLowerCase().includes(searchQuery.toLowerCase()) || t.name.toLowerCase().includes(searchQuery.toLowerCase()) || (t.tunnel_routes?.some((r: any) => r.hostname.toLowerCase().includes(searchQuery.toLowerCase())))).length)}</span> of <span className="font-semibold">{tunnels.filter(t => searchQuery === '' || t.id.toLowerCase().includes(searchQuery.toLowerCase()) || t.name.toLowerCase().includes(searchQuery.toLowerCase()) || (t.tunnel_routes?.some((r: any) => r.hostname.toLowerCase().includes(searchQuery.toLowerCase())))).length}</span> tunnels
-                        </div>
-                        <div className="flex gap-2">
-                            <button
-                                onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
-                                disabled={currentPage === 1}
-                                className="px-3 py-1.5 text-sm font-medium border border-gray-300 rounded-md hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                            >
-                                Previous
-                            </button>
-                            <div className="flex items-center gap-1 px-2">
-                                {Array.from({ length: Math.ceil(tunnels.filter(t => searchQuery === '' || t.id.toLowerCase().includes(searchQuery.toLowerCase()) || t.name.toLowerCase().includes(searchQuery.toLowerCase()) || (t.tunnel_routes?.some((r: any) => r.hostname.toLowerCase().includes(searchQuery.toLowerCase())))).length / itemsPerPage) }).map((_, i) => (
-                                    <button
-                                        key={i + 1}
-                                        onClick={() => setCurrentPage(i + 1)}
-                                        className={`w-8 h-8 text-sm font-medium rounded transition-colors ${currentPage === i + 1 ? 'bg-indigo-600 text-white' : 'border border-gray-300 hover:bg-gray-100'}`}
+                            </thead>
+                            <tbody className="divide-y divide-gray-200 bg-white">
+                                {paginatedTunnels.map((tunnel) => (
+                                    <tr
+                                        key={tunnel.id}
+                                        className={`cursor-pointer transition-colors hover:bg-indigo-50/60 ${selectedTunnelId === tunnel.id ? 'bg-indigo-50/70' : ''}`}
+                                        onClick={() => setSelectedTunnelId(tunnel.id)}
                                     >
-                                        {i + 1}
-                                    </button>
+                                        <td className="px-4 py-4" onClick={(event) => event.stopPropagation()}>
+                                            <input
+                                                type="checkbox"
+                                                checked={selectedTunnelIds.includes(tunnel.id)}
+                                                onChange={() => toggleTunnelSelection(tunnel.id)}
+                                            />
+                                        </td>
+                                        <td className="px-4 py-4">
+                                            <div className="flex items-center gap-3">
+                                                <div className={`flex h-9 w-9 items-center justify-center rounded-xl ${tunnel.status === 'online' ? 'bg-emerald-100 text-emerald-600' : 'bg-gray-100 text-gray-500'}`}>
+                                                    <Server className="h-4 w-4" />
+                                                </div>
+                                                <div>
+                                                    <div className="font-semibold text-gray-900">{tunnel.name}</div>
+                                                    <button
+                                                        onClick={(event) => {
+                                                            event.stopPropagation()
+                                                            copyTunnelId(tunnel.id)
+                                                        }}
+                                                        className="mt-1 inline-flex items-center gap-1 text-xs font-mono text-gray-500 hover:text-indigo-600"
+                                                    >
+                                                        {tunnel.id}
+                                                        {copiedTunnelId === tunnel.id ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </td>
+                                        <td className="px-4 py-4 text-sm text-gray-600">
+                                            <div className="font-mono text-xs">{tunnel.owner_id || '—'}</div>
+                                            <div className="mt-1 text-xs text-indigo-600">{tunnel.project_key || '—'}</div>
+                                        </td>
+                                        <td className="px-4 py-4">
+                                            <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${tunnel.status === 'online' ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-600'}`}>
+                                                {tunnel.status === 'online' ? 'Online' : 'Offline'}
+                                            </span>
+                                        </td>
+                                        <td className="px-4 py-4 text-sm text-gray-600">{routeCount(tunnel)}</td>
+                                        <td className="px-4 py-4 text-sm text-gray-600">{formatDate(tunnel.created_at)}</td>
+                                        <td className="px-4 py-4">
+                                            <div className="flex items-center justify-end gap-2" onClick={(event) => event.stopPropagation()}>
+                                                <button
+                                                    onClick={() => openEditTunnel(tunnel)}
+                                                    className="rounded-lg p-2 text-gray-500 hover:bg-indigo-50 hover:text-indigo-600"
+                                                    title="编辑 tunnel"
+                                                >
+                                                    <Pencil className="h-4 w-4" />
+                                                </button>
+                                                <button
+                                                    onClick={() =>
+                                                        setConfirmState({
+                                                            title: '删除 Tunnel？',
+                                                            description: `会永久删除 ${tunnel.name} 以及其下全部路由。`,
+                                                            action: () => deleteSingleTunnel(tunnel.id),
+                                                        })
+                                                    }
+                                                    className="rounded-lg p-2 text-gray-500 hover:bg-red-50 hover:text-red-600"
+                                                    title="删除 tunnel"
+                                                >
+                                                    <Trash2 className="h-4 w-4" />
+                                                </button>
+                                            </div>
+                                        </td>
+                                    </tr>
                                 ))}
-                            </div>
+                                {!loading && paginatedTunnels.length === 0 && (
+                                    <tr>
+                                        <td colSpan={7} className="px-4 py-16 text-center text-sm text-gray-500">
+                                            没有匹配的 tunnel 记录。
+                                        </td>
+                                    </tr>
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div className="flex items-center justify-between border-t border-gray-200 px-4 py-3 text-sm text-gray-500">
+                        <span>共 {filteredTunnels.length} 条，当前第 {currentPageSafe} / {totalPages} 页</span>
+                        <div className="flex items-center gap-2">
                             <button
-                                onClick={() => setCurrentPage(prev => prev + 1)}
-                                disabled={currentPage >= Math.ceil(tunnels.filter(t => searchQuery === '' || t.id.toLowerCase().includes(searchQuery.toLowerCase()) || t.name.toLowerCase().includes(searchQuery.toLowerCase()) || (t.tunnel_routes?.some((r: any) => r.hostname.toLowerCase().includes(searchQuery.toLowerCase())))).length / itemsPerPage)}
-                                className="px-3 py-1.5 text-sm font-medium border border-gray-300 rounded-md hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                disabled={currentPageSafe <= 1}
+                                onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+                                className="rounded-lg border border-gray-300 px-3 py-1.5 disabled:cursor-not-allowed disabled:opacity-40"
                             >
-                                Next
+                                上一页
+                            </button>
+                            <button
+                                disabled={currentPageSafe >= totalPages}
+                                onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
+                                className="rounded-lg border border-gray-300 px-3 py-1.5 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                                下一页
                             </button>
                         </div>
                     </div>
-                )}
-            </div>
+                </section>
 
-            {/* Slide-over Drawer */}
-            {selectedTunnel && (
-                <>
-                    <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm z-40 transition-opacity" onClick={() => setSelectedTunnel(null)}></div>
-                    <div className="fixed inset-y-0 right-0 max-w-2xl w-full bg-white shadow-2xl z-50 transform transition-transform duration-300 ease-in-out border-l border-gray-200 flex flex-col">
-                        <div className="px-6 py-5 border-b border-gray-200 bg-gray-50 flex items-center justify-between sticky top-0 z-10">
-                            <div className="flex items-center">
-                                <div className="bg-indigo-100 text-indigo-600 p-2 rounded-lg mr-3 shadow-inner"><Server className="w-5 h-5" /></div>
-                                <div>
-                                    <h2 className="text-xl font-bold text-gray-900" id="slide-over-title">{selectedTunnel.name}</h2>
-                                    <p className="text-sm font-mono text-gray-500 flex items-center mt-0.5">
-                                        {selectedTunnel.id}
-                                        <button className="ml-2 text-gray-400 hover:text-indigo-600 transition-colors" onClick={() => copyTunnelId(selectedTunnel.id)}>{copiedId ? <Check className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5" />}</button>
-                                    </p>
-                                </div>
-                            </div>
-                            <button type="button" className="bg-white rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-100 p-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-colors" onClick={() => setSelectedTunnel(null)}>
-                                <XCircle className="h-6 w-6" aria-hidden="true" />
-                            </button>
-                        </div>
-
-                        <div className="flex-1 overflow-y-auto p-6">
-                            {isAdmin && (selectedTunnel.owner_id || selectedTunnel.project_key) && (
-                                <div className="mb-4 bg-purple-50 border border-purple-200 rounded-xl p-4">
-                                    <h4 className="text-xs font-bold text-purple-700 uppercase tracking-wide mb-2">Owner Info</h4>
-                                    <div className="grid grid-cols-2 gap-2 text-sm">
-                                        <div>
-                                            <span className="text-purple-500 text-xs">Owner ID</span>
-                                            <p className="font-mono text-gray-800 text-xs break-all">{selectedTunnel.owner_id || '—'}</p>
-                                        </div>
-                                        <div>
-                                            <span className="text-purple-500 text-xs">Project Key</span>
-                                            <p className="font-mono text-gray-800 text-xs break-all">{selectedTunnel.project_key || '—'}</p>
-                                        </div>
+                <section className="rounded-2xl border border-gray-200 bg-white shadow-sm">
+                    {selectedTunnel ? (
+                        <>
+                            <div className="border-b border-gray-200 p-5">
+                                <div className="flex items-start justify-between gap-4">
+                                    <div>
+                                        <h2 className="text-xl font-bold text-gray-900">{selectedTunnel.name}</h2>
+                                        <p className="mt-1 text-xs font-mono text-gray-500">{selectedTunnel.id}</p>
                                     </div>
-                                </div>
-                            )}
-                            {isAdmin && (selectedTunnel.client_ip || selectedTunnel.os_type) && (
-                                <div className="mb-4 bg-cyan-50 border border-cyan-200 rounded-xl p-4">
-                                    <h4 className="text-xs font-bold text-cyan-700 uppercase tracking-wide mb-2">Client Info</h4>
-                                    <div className="grid grid-cols-2 gap-2 text-sm">
-                                        <div>
-                                            <span className="text-cyan-500 text-xs">Client IP</span>
-                                            <p className="font-mono text-gray-800 text-xs break-all">{selectedTunnel.client_ip || '—'}</p>
-                                        </div>
-                                        <div>
-                                            <span className="text-cyan-500 text-xs">Device</span>
-                                            <p className="text-gray-800 text-xs">
-                                                {selectedTunnel.os_type ? (
-                                                    <>
-                                                        {selectedTunnel.os_type === 'mac' && '🍎 macOS'}
-                                                        {selectedTunnel.os_type === 'linux' && '🐧 Linux'}
-                                                        {selectedTunnel.os_type === 'windows' && '🪟 Windows'}
-                                                        {!['mac', 'linux', 'windows'].includes(selectedTunnel.os_type) && selectedTunnel.os_type}
-                                                    </>
-                                                ) : (
-                                                    '—'
-                                                )}
-                                            </p>
-                                        </div>
-                                    </div>
-                                </div>
-                            )}
-                            <div className="mb-6 bg-blue-50 border border-blue-200 rounded-xl p-5 shadow-sm">
-                                <h4 className="text-sm font-bold text-blue-900 mb-2 flex items-center"><Play className="w-4 h-4 mr-1.5" /> Agent Connection Command</h4>
-                                <p className="text-sm text-blue-700 mb-3">Run this exact command on your target machine to connect it to this tunnel instance.</p>
-                                <div className="relative group">
-                                    <pre className="bg-blue-950 text-blue-50 p-3 rounded-lg text-xs font-mono overflow-x-auto border border-blue-800 shadow-inner">agent -server ws://152.32.214.95/connect -tunnel-id {selectedTunnel.id} -tunnel-token {selectedTunnel.token_hash}</pre>
-                                    <button className="absolute top-2 right-2 bg-blue-800 hover:bg-blue-700 text-white p-1.5 rounded-md opacity-0 group-hover:opacity-100 transition-opacity" onClick={() => navigator.clipboard.writeText(`agent -server ws://152.32.214.95/connect -tunnel-id ${selectedTunnel.id} -tunnel-token ${selectedTunnel.token_hash}`)}><Copy className="w-3.5 h-3.5" /></button>
-                                </div>
-                            </div>
-
-                            <div className="mb-8">
-                                <div className="flex justify-between items-center mb-4">
-                                    <h3 className="text-lg font-bold text-gray-900">Routes ({selectedTunnel.routes})</h3>
-                                    <button className="text-sm border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 px-3 py-1.5 rounded-md font-medium shadow-sm transition-colors flex items-center">
-                                        <Plus className="w-3.5 h-3.5 mr-1" /> Add Route
+                                    <button
+                                        onClick={() => openEditTunnel(selectedTunnel)}
+                                        className="inline-flex items-center rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                                    >
+                                        <Pencil className="mr-2 h-4 w-4" />
+                                        编辑 Tunnel
                                     </button>
                                 </div>
 
-                                <div className="bg-white border text-left border-gray-200 rounded-lg shadow-sm overflow-hidden">
+                                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                                    <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+                                        <div className="text-xs text-gray-500">Owner</div>
+                                        <div className="mt-1 font-mono text-sm text-gray-800">{selectedTunnel.owner_id || '—'}</div>
+                                    </div>
+                                    <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+                                        <div className="text-xs text-gray-500">Project</div>
+                                        <div className="mt-1 text-sm text-gray-800">{selectedTunnel.project_key || '—'}</div>
+                                    </div>
+                                    <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+                                        <div className="text-xs text-gray-500">Client IP</div>
+                                        <div className="mt-1 font-mono text-sm text-gray-800">{selectedTunnel.client_ip || '—'}</div>
+                                    </div>
+                                    <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+                                        <div className="text-xs text-gray-500">Device</div>
+                                        <div className="mt-1 text-sm text-gray-800">{selectedTunnel.os_type || '—'}</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="p-5">
+                                <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                                    <div>
+                                        <h3 className="text-lg font-semibold text-gray-900">Routes</h3>
+                                        <p className="text-sm text-gray-500">当前 tunnel 下共 {routeCount(selectedTunnel)} 条路由。</p>
+                                    </div>
+                                    <div className="flex flex-wrap items-center gap-3">
+                                        {selectedRouteIds.length > 0 && (
+                                            <button
+                                                onClick={() =>
+                                                    setConfirmState({
+                                                        title: `删除 ${selectedRouteIds.length} 条 Route？`,
+                                                        description: '批量删除后不可恢复。',
+                                                        action: () => bulkDelete('routes', selectedRouteIds),
+                                                    })
+                                                }
+                                                className="inline-flex items-center rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-100"
+                                            >
+                                                <Trash2 className="mr-2 h-4 w-4" />
+                                                批量删除 Route
+                                            </button>
+                                        )}
+                                        <button
+                                            onClick={openCreateRoute}
+                                            className="inline-flex items-center rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+                                        >
+                                            <Plus className="mr-2 h-4 w-4" />
+                                            新建 Route
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div className="overflow-hidden rounded-xl border border-gray-200">
                                     <table className="min-w-full divide-y divide-gray-200">
                                         <thead className="bg-gray-50">
                                             <tr>
-                                                <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase">Public Hostname</th>
-                                                <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase">Target (Local)</th>
-                                                <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-500 uppercase">Status</th>
+                                                <th className="px-4 py-3 text-left">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={selectedTunnel.tunnel_routes.length > 0 && selectedTunnel.tunnel_routes.every((route) => selectedRouteIds.includes(route.id))}
+                                                        onChange={(event) => {
+                                                            if (event.target.checked) {
+                                                                setSelectedRouteIds(selectedTunnel.tunnel_routes.map((route) => route.id))
+                                                            } else {
+                                                                setSelectedRouteIds([])
+                                                            }
+                                                        }}
+                                                    />
+                                                </th>
+                                                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">Hostname</th>
+                                                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">Target</th>
+                                                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">状态</th>
+                                                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-gray-500">操作</th>
                                             </tr>
                                         </thead>
-                                        <tbody className="divide-y divide-gray-200">
-                                            {selectedTunnel.tunnel_routes?.map((route: any) => (
-                                                <tr key={route.id} className="hover:bg-gray-50 transition-colors">
-                                                    <td className="px-4 py-3 text-sm font-medium text-indigo-600">
-                                                        {isAdmin && editingRouteId === route.id ? (
-                                                            <div className="flex flex-col gap-1">
-                                                                <div className="flex items-center gap-1">
-                                                                    <input
-                                                                        className="border border-indigo-300 rounded px-2 py-1 text-xs font-mono text-gray-800 w-full focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                                                                        value={editingHostname}
-                                                                        onChange={e => { setEditingHostname(e.target.value); setEditError('') }}
-                                                                        onKeyDown={e => { if (e.key === 'Enter') saveEditRoute(route.id); if (e.key === 'Escape') cancelEditRoute() }}
-                                                                        autoFocus
-                                                                    />
-                                                                    <button onClick={() => saveEditRoute(route.id)} disabled={editSaving} className="text-emerald-600 hover:text-emerald-700 disabled:opacity-50"><Check className="w-4 h-4" /></button>
-                                                                    <button onClick={cancelEditRoute} className="text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
-                                                                </div>
-                                                                {editError && <p className="text-red-500 text-xs">{editError}</p>}
-                                                            </div>
-                                                        ) : (
-                                                            <div className="flex items-center gap-1.5 group/hostname">
-                                                                {isAdmin ? (
-                                                                    <button
-                                                                        type="button"
-                                                                        onClick={() => startEditRoute(route)}
-                                                                        className="text-left text-indigo-600 hover:text-indigo-800 hover:underline font-mono"
-                                                                        title="点击修改域名"
-                                                                    >
-                                                                        {route.hostname}
-                                                                    </button>
-                                                                ) : (
-                                                                    <span className="font-mono">{route.hostname}</span>
-                                                                )}
-                                                                {isAdmin && (
-                                                                    <button
-                                                                        type="button"
-                                                                        onClick={() => startEditRoute(route)}
-                                                                        className="text-gray-400 hover:text-indigo-600 transition-opacity sm:opacity-0 sm:group-hover/hostname:opacity-100"
-                                                                        title="修改域名"
-                                                                    >
-                                                                        <Pencil className="w-3.5 h-3.5" />
-                                                                    </button>
-                                                                )}
-                                                            </div>
-                                                        )}
+                                        <tbody className="divide-y divide-gray-200 bg-white">
+                                            {selectedTunnel.tunnel_routes.map((route) => (
+                                                <tr key={route.id}>
+                                                    <td className="px-4 py-3">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={selectedRouteIds.includes(route.id)}
+                                                            onChange={() => toggleRouteSelection(route.id)}
+                                                        />
                                                     </td>
-                                                    <td className="px-4 py-3 text-sm font-mono text-gray-600 bg-gray-50 rounded">{route.target}</td>
-                                                    <td className="px-4 py-3 text-sm text-right flex items-center justify-end gap-2">
-                                                        {isAdmin ? (
+                                                    <td className="px-4 py-3">
+                                                        <div className="font-mono text-sm text-indigo-600">{route.hostname}</div>
+                                                    </td>
+                                                    <td className="px-4 py-3">
+                                                        <div className="font-mono text-sm text-gray-600">{route.target}</div>
+                                                    </td>
+                                                    <td className="px-4 py-3">
+                                                        <button
+                                                            onClick={async () => {
+                                                                setSubmitting(true)
+                                                                setPageError('')
+                                                                try {
+                                                                    await updateRoute(route.id, { is_enabled: !route.is_enabled })
+                                                                    await refresh(selectedTunnel.id)
+                                                                } catch (error) {
+                                                                    setPageError(error instanceof Error ? error.message : '更新 route 失败')
+                                                                } finally {
+                                                                    setSubmitting(false)
+                                                                }
+                                                            }}
+                                                            className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${route.is_enabled ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-600'}`}
+                                                        >
+                                                            {route.is_enabled ? '已启用' : '已禁用'}
+                                                        </button>
+                                                    </td>
+                                                    <td className="px-4 py-3">
+                                                        <div className="flex items-center justify-end gap-2">
                                                             <button
-                                                                onClick={() => toggleRouteEnabled(route.id, !route.is_enabled)}
-                                                                className={`relative inline-flex items-center h-5 w-9 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 ${route.is_enabled ? 'bg-emerald-500' : 'bg-gray-300'}`}
-                                                                title={route.is_enabled ? '禁用路由' : '启用路由'}
+                                                                onClick={() => openEditRoute(route)}
+                                                                className="rounded-lg p-2 text-gray-500 hover:bg-indigo-50 hover:text-indigo-600"
+                                                                title="编辑 route"
                                                             >
-                                                                <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform ${route.is_enabled ? 'translate-x-4' : 'translate-x-0'}`} />
+                                                                <Pencil className="h-4 w-4" />
                                                             </button>
-                                                        ) : (
                                                             <button
-                                                                disabled
-                                                                className={`relative inline-flex items-center h-5 w-9 rounded-full transition-colors ${route.is_enabled ? 'bg-emerald-500' : 'bg-gray-300'}`}
+                                                                onClick={() =>
+                                                                    setConfirmState({
+                                                                        title: '删除 Route？',
+                                                                        description: `会永久删除 ${route.hostname}。`,
+                                                                        action: () => deleteSingleRoute(route.id),
+                                                                    })
+                                                                }
+                                                                className="rounded-lg p-2 text-gray-500 hover:bg-red-50 hover:text-red-600"
+                                                                title="删除 route"
                                                             >
-                                                                <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform ${route.is_enabled ? 'translate-x-4' : 'translate-x-0'}`} />
+                                                                <Trash2 className="h-4 w-4" />
                                                             </button>
-                                                        )}
-                                                        {isAdmin && (
-                                                            <button
-                                                                onClick={() => {
-                                                                    setDeletingRouteId(route.id)
-                                                                    setDeleteConfirming(true)
-                                                                    setDeleteError('')
-                                                                }}
-                                                                className="text-red-500 hover:text-red-700 hover:bg-red-50 p-1.5 rounded transition-colors"
-                                                                title="删除路由"
-                                                            >
-                                                                <Trash2 className="w-4 h-4" />
-                                                            </button>
-                                                        )}
+                                                        </div>
                                                     </td>
                                                 </tr>
                                             ))}
-                                            {(!selectedTunnel.tunnel_routes || selectedTunnel.tunnel_routes.length === 0) && (
+                                            {selectedTunnel.tunnel_routes.length === 0 && (
                                                 <tr>
-                                                    <td colSpan={3} className="px-4 py-4 text-center text-sm text-gray-500">No routes configured yet.</td>
+                                                    <td colSpan={5} className="px-4 py-10 text-center text-sm text-gray-500">
+                                                        当前 tunnel 还没有 route。
+                                                    </td>
                                                 </tr>
                                             )}
                                         </tbody>
                                     </table>
                                 </div>
                             </div>
-                        </div>
-
-                        <div className="p-6 border-t border-gray-200 bg-gray-50">
-                            <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-start justify-between">
-                                <div>
-                                    <h4 className="text-sm font-bold text-red-800">Danger Zone</h4>
-                                    <p className="text-xs text-red-600 mt-1">Permanently delete this tunnel and all associated routes. This action cannot be undone.</p>
-                                </div>
-                                <button
-                                    onClick={() => {
-                                        setDeletingTunnelId(selectedTunnel.id)
-                                        setDeleteConfirming(true)
-                                        setDeleteError('')
-                                    }}
-                                    className="flex-shrink-0 bg-red-100 hover:bg-red-200 text-red-700 text-sm font-bold py-2 px-3 rounded text-center border border-red-300 transition-colors flex items-center">
-                                    <Trash2 className="w-4 h-4 mr-1.5" /> Delete
-                                </button>
+                        </>
+                    ) : (
+                        <div className="flex h-full min-h-[420px] items-center justify-center p-8 text-center">
+                            <div>
+                                <Server className="mx-auto h-10 w-10 text-gray-300" />
+                                <h2 className="mt-4 text-lg font-semibold text-gray-900">选择一个 Tunnel</h2>
+                                <p className="mt-2 text-sm text-gray-500">右侧会展示 Route 详情，并支持编辑、新增和批量删除。</p>
                             </div>
                         </div>
+                    )}
+                </section>
+            </div>
+
+            {(tunnelModalOpen || routeModalOpen) && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/50 p-4 backdrop-blur-sm">
+                    <div className="w-full max-w-2xl rounded-2xl bg-white shadow-2xl">
+                        <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
+                            <div>
+                                <h3 className="text-lg font-bold text-gray-900">
+                                    {tunnelModalOpen ? (tunnelForm.id ? '编辑 Tunnel' : '新建 Tunnel') : routeForm.id ? '编辑 Route' : '新建 Route'}
+                                </h3>
+                                <p className="mt-1 text-sm text-gray-500">
+                                    {tunnelModalOpen ? '修改 tunnel 基本信息和 token。' : '修改对外 hostname、目标地址和启用状态。'}
+                                </p>
+                            </div>
+                            <button
+                                onClick={() => {
+                                    setTunnelModalOpen(false)
+                                    setRouteModalOpen(false)
+                                    setFormError('')
+                                }}
+                                className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                            >
+                                <X className="h-5 w-5" />
+                            </button>
+                        </div>
+
+                        <div className="space-y-4 px-6 py-5">
+                            {formError && (
+                                <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                                    {formError}
+                                </div>
+                            )}
+
+                            {tunnelModalOpen ? (
+                                <div className="grid gap-4 md:grid-cols-2">
+                                    <label className="block">
+                                        <span className="mb-1 block text-sm font-medium text-gray-700">Name</span>
+                                        <input
+                                            value={tunnelForm.name}
+                                            onChange={(event) => setTunnelForm((prev) => ({ ...prev, name: event.target.value }))}
+                                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                                        />
+                                    </label>
+                                    <label className="block">
+                                        <span className="mb-1 block text-sm font-medium text-gray-700">Token</span>
+                                        <input
+                                            value={tunnelForm.token_hash}
+                                            onChange={(event) => setTunnelForm((prev) => ({ ...prev, token_hash: event.target.value }))}
+                                            placeholder="留空则由后端生成"
+                                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                                        />
+                                    </label>
+                                    <label className="block">
+                                        <span className="mb-1 block text-sm font-medium text-gray-700">Owner ID</span>
+                                        <input
+                                            value={tunnelForm.owner_id}
+                                            onChange={(event) => setTunnelForm((prev) => ({ ...prev, owner_id: event.target.value }))}
+                                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                                        />
+                                    </label>
+                                    <label className="block">
+                                        <span className="mb-1 block text-sm font-medium text-gray-700">Project Key</span>
+                                        <input
+                                            value={tunnelForm.project_key}
+                                            onChange={(event) => setTunnelForm((prev) => ({ ...prev, project_key: event.target.value }))}
+                                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                                        />
+                                    </label>
+                                    <label className="block">
+                                        <span className="mb-1 block text-sm font-medium text-gray-700">Status</span>
+                                        <select
+                                            value={tunnelForm.status}
+                                            onChange={(event) => setTunnelForm((prev) => ({ ...prev, status: event.target.value as 'online' | 'offline' }))}
+                                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                                        >
+                                            <option value="offline">offline</option>
+                                            <option value="online">online</option>
+                                        </select>
+                                    </label>
+                                    <label className="block">
+                                        <span className="mb-1 block text-sm font-medium text-gray-700">Device</span>
+                                        <input
+                                            value={tunnelForm.os_type}
+                                            onChange={(event) => setTunnelForm((prev) => ({ ...prev, os_type: event.target.value }))}
+                                            placeholder="mac / linux / windows"
+                                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                                        />
+                                    </label>
+                                    <label className="block md:col-span-2">
+                                        <span className="mb-1 block text-sm font-medium text-gray-700">Client IP</span>
+                                        <input
+                                            value={tunnelForm.client_ip}
+                                            onChange={(event) => setTunnelForm((prev) => ({ ...prev, client_ip: event.target.value }))}
+                                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                                        />
+                                    </label>
+                                </div>
+                            ) : (
+                                <div className="grid gap-4 md:grid-cols-2">
+                                    <label className="block md:col-span-2">
+                                        <span className="mb-1 block text-sm font-medium text-gray-700">Tunnel ID</span>
+                                        <input
+                                            value={routeForm.tunnel_id}
+                                            onChange={(event) => setRouteForm((prev) => ({ ...prev, tunnel_id: event.target.value }))}
+                                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-mono"
+                                            disabled={Boolean(routeForm.id)}
+                                        />
+                                    </label>
+                                    <label className="block md:col-span-2">
+                                        <span className="mb-1 block text-sm font-medium text-gray-700">Hostname</span>
+                                        <input
+                                            value={routeForm.hostname}
+                                            onChange={(event) => setRouteForm((prev) => ({ ...prev, hostname: event.target.value }))}
+                                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-mono"
+                                        />
+                                    </label>
+                                    <label className="block md:col-span-2">
+                                        <span className="mb-1 block text-sm font-medium text-gray-700">Target</span>
+                                        <input
+                                            value={routeForm.target}
+                                            onChange={(event) => setRouteForm((prev) => ({ ...prev, target: event.target.value }))}
+                                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-mono"
+                                        />
+                                    </label>
+                                    <label className="flex items-center gap-3 rounded-xl border border-gray-200 px-3 py-2 md:col-span-2">
+                                        <input
+                                            type="checkbox"
+                                            checked={routeForm.is_enabled}
+                                            onChange={(event) => setRouteForm((prev) => ({ ...prev, is_enabled: event.target.checked }))}
+                                        />
+                                        <span className="text-sm text-gray-700">创建后立即启用</span>
+                                    </label>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="flex items-center justify-end gap-3 border-t border-gray-200 bg-gray-50 px-6 py-4">
+                            <button
+                                onClick={() => {
+                                    setTunnelModalOpen(false)
+                                    setRouteModalOpen(false)
+                                    setFormError('')
+                                }}
+                                className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                            >
+                                取消
+                            </button>
+                            <button
+                                disabled={submitting}
+                                onClick={() => (tunnelModalOpen ? submitTunnelForm() : submitRouteForm())}
+                                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
+                            >
+                                {submitting ? '保存中...' : '保存'}
+                            </button>
+                        </div>
                     </div>
-                </>
+                </div>
             )}
 
-            {/* Delete Confirmation Modal */}
-            {deleteConfirming && (
-                <>
-                    <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                        <div className="bg-white rounded-lg shadow-xl max-w-sm w-full transform transition-all">
-                            <div className="p-6">
-                                <div className="flex items-center justify-center w-12 h-12 mx-auto bg-red-100 rounded-full">
-                                    <AlertTriangle className="w-6 h-6 text-red-600" />
-                                </div>
-                                <h3 className="mt-4 text-lg font-bold text-gray-900 text-center">
-                                    {deletingRouteId ? '删除路由？' : '删除隧道？'}
-                                </h3>
-                                <p className="mt-2 text-sm text-gray-500 text-center">
-                                    {deletingRouteId
-                                        ? '该路由将被永久删除，无法恢复。'
-                                        : '该隧道及其所有路由将被永久删除，无法恢复。'}
-                                </p>
-                                {deleteError && (
-                                    <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-md">
-                                        <p className="text-sm text-red-700">{deleteError}</p>
-                                    </div>
-                                )}
+            {confirmState && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/50 p-4 backdrop-blur-sm">
+                    <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl">
+                        <div className="px-6 py-6">
+                            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-red-100">
+                                <AlertTriangle className="h-6 w-6 text-red-600" />
                             </div>
-                            <div className="bg-gray-50 px-6 py-4 flex gap-3 justify-end border-t border-gray-200 rounded-b-lg">
-                                <button
-                                    onClick={() => {
-                                        setDeleteConfirming(false)
-                                        setDeletingTunnelId(null)
-                                        setDeletingRouteId(null)
-                                        setDeleteError('')
-                                    }}
-                                    className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
-                                >
-                                    取消
-                                </button>
-                                <button
-                                    onClick={() => {
-                                        if (deletingRouteId) {
-                                            deleteRoute(deletingRouteId)
-                                        } else if (deletingTunnelId) {
-                                            deleteTunnel(deletingTunnelId)
-                                        }
-                                    }}
-                                    className="px-4 py-2 text-sm font-bold text-white bg-red-600 border border-red-600 rounded-md hover:bg-red-700 transition-colors flex items-center"
-                                >
-                                    <Trash2 className="w-4 h-4 mr-1.5" /> 确认删除
-                                </button>
-                            </div>
+                            <h3 className="mt-4 text-center text-lg font-bold text-gray-900">{confirmState.title}</h3>
+                            <p className="mt-2 text-center text-sm text-gray-500">{confirmState.description}</p>
+                        </div>
+                        <div className="flex items-center justify-end gap-3 rounded-b-2xl border-t border-gray-200 bg-gray-50 px-6 py-4">
+                            <button
+                                onClick={() => setConfirmState(null)}
+                                className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                            >
+                                取消
+                            </button>
+                            <button
+                                disabled={submitting}
+                                onClick={() => runAction(confirmState.action)}
+                                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-60"
+                            >
+                                {submitting ? '处理中...' : '确认删除'}
+                            </button>
                         </div>
                     </div>
-                </>
+                </div>
+            )}
+
+            {loading && (
+                <div className="fixed inset-0 z-40 flex items-center justify-center bg-white/60 backdrop-blur-sm">
+                    <div className="flex items-center gap-3 rounded-xl border border-gray-200 bg-white px-5 py-3 text-sm text-gray-600 shadow-lg">
+                        <RefreshCw className="h-4 w-4 animate-spin" />
+                        正在加载 Tunnel 数据...
+                    </div>
+                </div>
             )}
         </div>
     )

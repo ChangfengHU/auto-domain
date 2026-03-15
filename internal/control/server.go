@@ -223,7 +223,6 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"route": route})
 }
 
-
 func (s *Server) handleSessionRegister(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -264,6 +263,9 @@ func (s *Server) handleSessionRegister(w http.ResponseWriter, r *http.Request) {
 		enabled = *req.Enabled
 	}
 
+	requestedSubdomain := strings.TrimSpace(req.Subdomain)
+	requestedTunnelID := strings.TrimSpace(req.TunnelID)
+	requestedTunnelToken := strings.TrimSpace(req.TunnelToken)
 	label := sanitizeDNSLabel(req.Subdomain)
 	if label == "" {
 		label = sanitizeDNSLabel(project)
@@ -276,11 +278,6 @@ func (s *Server) handleSessionRegister(w http.ResponseWriter, r *http.Request) {
 		ownerLabel = "user"
 	}
 
-	token, err := randomToken(32)
-	if err != nil {
-		errorJSON(w, http.StatusInternalServerError, "generate token failed")
-		return
-	}
 	tunnelName := fmt.Sprintf("%s-%s-%s", label, ownerLabel, randomSuffix(4))
 	projectKey := sanitizeProjectKey(project)
 
@@ -292,63 +289,118 @@ func (s *Server) handleSessionRegister(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.AdminKey) != "" {
 		isAdminAuthed = (req.AdminKey == s.adminKey)
 	}
-
-	if userID != "" && projectKey != "" {
-		existing, err := s.supabase.GetTunnelByOwnerAndProject(ctx, userID, projectKey)
-		if err == nil {
-			// Tunnel already exists
-			if isAdminAuthed {
-				// Admin authenticated, allow idempotent registration
-				if err := s.supabase.DeleteTunnelByID(ctx, existing.ID); err != nil {
-					s.events.Add("warn", "session.register.cleanup_failed", existing.ID, err.Error())
-				}
-			} else {
-				// No admin auth, reject with conflict
-				errorJSON(w, http.StatusConflict, "tunnel already exists for this user and project, use admin_key to override")
-				s.events.Add("warn", "session.register.conflict", "", fmt.Sprintf("duplicate for %s/%s", userID, projectKey))
-				return
-			}
-		} else if !errors.Is(err, ErrNotFound) {
-			// Database error
-			errorJSON(w, http.StatusBadGateway, "failed to check existing tunnel")
-			return
+	if !isAdminAuthed {
+		authHeader := r.Header.Get("Authorization")
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			key := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+			isAdminAuthed = key != "" && key == s.adminKey
 		}
-		// else: tunnel doesn't exist, proceed with creation
+	}
+	if requestedSubdomain != "" && label == "" {
+		errorJSON(w, http.StatusBadRequest, "subdomain is invalid")
+		return
+	}
+	if (requestedTunnelID == "") != (requestedTunnelToken == "") {
+		errorJSON(w, http.StatusBadRequest, "tunnel_id and tunnel_token must be provided together")
+		return
 	}
 
-	tunnel, err := s.supabase.CreateTunnelWithMeta(ctx, tunnelName, token, userID, projectKey,
-		strings.TrimSpace(req.ClientIP), strings.TrimSpace(req.OSType), req.Metadata)
-	if err != nil {
-		errorJSON(w, http.StatusBadGateway, err.Error())
-		s.events.Add("error", "session.register.tunnel_failed", "", err.Error())
-		return
+	var tunnel Tunnel
+	reuseExistingTunnel := requestedTunnelID != "" && requestedTunnelToken != ""
+	if reuseExistingTunnel {
+		tunnel, err = s.supabase.ValidateTunnelToken(ctx, requestedTunnelID, requestedTunnelToken)
+		if err != nil {
+			errorJSON(w, http.StatusUnauthorized, "invalid tunnel credentials")
+			return
+		}
+	} else {
+		token, tokenErr := randomToken(32)
+		if tokenErr != nil {
+			errorJSON(w, http.StatusInternalServerError, "generate token failed")
+			return
+		}
+
+		if userID != "" && projectKey != "" {
+			existing, err := s.supabase.GetTunnelByOwnerAndProject(ctx, userID, projectKey)
+			if err == nil {
+				// Tunnel already exists
+				if isAdminAuthed {
+					// Admin authenticated, allow idempotent registration
+					if err := s.supabase.DeleteTunnelByID(ctx, existing.ID); err != nil {
+						s.events.Add("warn", "session.register.cleanup_failed", existing.ID, err.Error())
+					}
+				} else {
+					// No admin auth, reject with conflict
+					errorJSON(w, http.StatusConflict, "tunnel already exists for this user and project, use admin_key to override")
+					s.events.Add("warn", "session.register.conflict", "", fmt.Sprintf("duplicate for %s/%s", userID, projectKey))
+					return
+				}
+			} else if !errors.Is(err, ErrNotFound) {
+				// Database error
+				errorJSON(w, http.StatusBadGateway, "failed to check existing tunnel")
+				return
+			}
+			// else: tunnel doesn't exist, proceed with creation
+		}
+
+		tunnel, err = s.supabase.CreateTunnelWithMeta(ctx, tunnelName, token, userID, projectKey,
+			strings.TrimSpace(req.ClientIP), strings.TrimSpace(req.OSType), req.Metadata)
+		if err != nil {
+			errorJSON(w, http.StatusBadGateway, err.Error())
+			s.events.Add("error", "session.register.tunnel_failed", "", err.Error())
+			return
+		}
 	}
 
 	var route Route
 	var hostname string
 	createErr := error(nil)
-	const maxRouteAttempts = 6
-	for i := 0; i < maxRouteAttempts; i++ {
-		hostname = fmt.Sprintf("%s-%s.%s", label, randomSuffix(6), baseDomain)
+	baseHostname := fmt.Sprintf("%s.%s", label, baseDomain)
+	hostname = baseHostname
+	existingRoute, err := s.supabase.GetRouteByHostname(ctx, hostname)
+	if err == nil {
+		if existingRoute.TunnelID == tunnel.ID {
+			route, createErr = s.supabase.UpdateRouteBinding(ctx, existingRoute.ID, tunnel.ID, target, enabled)
+		} else if isAdminAuthed {
+			route, createErr = s.supabase.UpdateRouteBinding(ctx, existingRoute.ID, tunnel.ID, target, enabled)
+		} else {
+			const maxRouteAttempts = 6
+			for i := 0; i < maxRouteAttempts; i++ {
+				hostname = fmt.Sprintf("%s-%s.%s", label, randomSuffix(6), baseDomain)
+				route, createErr = s.supabase.CreateRoute(ctx, Route{
+					TunnelID: tunnel.ID,
+					Hostname: hostname,
+					Target:   target,
+					Enabled:  enabled,
+				})
+				if createErr == nil {
+					break
+				}
+				if !isRouteConflictError(createErr) {
+					break
+				}
+			}
+		}
+	} else if errors.Is(err, ErrNotFound) {
 		route, createErr = s.supabase.CreateRoute(ctx, Route{
 			TunnelID: tunnel.ID,
 			Hostname: hostname,
 			Target:   target,
 			Enabled:  enabled,
 		})
-		if createErr == nil {
-			break
-		}
-		if !isRouteConflictError(createErr) {
-			break
-		}
+	} else {
+		createErr = err
 	}
 	if createErr != nil {
-		_ = s.supabase.DeleteTunnelByID(ctx, tunnel.ID)
+		if !reuseExistingTunnel {
+			_ = s.supabase.DeleteTunnelByID(ctx, tunnel.ID)
+		}
 		status := http.StatusBadGateway
+		if strings.Contains(strings.ToLower(createErr.Error()), "hostname already exists") {
+			status = http.StatusConflict
+		}
 		if isRouteConflictError(createErr) {
 			status = http.StatusConflict
-			createErr = errors.New("failed to allocate unique hostname, retry later")
 		}
 		errorJSON(w, status, createErr.Error())
 		s.events.Add("error", "session.register.route_failed", tunnel.ID, createErr.Error())
@@ -612,7 +664,7 @@ func (s *Server) agentCommand(tunnelID, token string) string {
 	if adminAddr == "" {
 		adminAddr = "127.0.0.1:17001"
 	}
-	return fmt.Sprintf("./agent -server %s -token %s -route-sync-url %s -tunnel-id %s -tunnel-token %s -admin-addr %s", s.agentServerWS, token, s.agentConfigURL, tunnelID, token, adminAddr)
+	return fmt.Sprintf("./agent -server %s -token %s -route-sync-url %s -tunnel-id %s -tunnel-token %s -admin-addr %s -config ~/.tunneling/machine-agent/config.json", s.agentServerWS, token, s.agentConfigURL, tunnelID, token, adminAddr)
 }
 
 func decodeJSON(body io.Reader, out any) error {
@@ -958,25 +1010,32 @@ func (s *Server) handlePortalAddRoute(w http.ResponseWriter, r *http.Request) {
 		label = "app"
 	}
 
+	hostname := fmt.Sprintf("%s.%s", label, baseDomain)
+	existingRoute, err := s.supabase.GetRouteByHostname(ctx, hostname)
 	var route Route
 	var createErr error
-	for i := 0; i < 6; i++ {
-		hostname := fmt.Sprintf("%s-%s.%s", label, randomSuffix(6), baseDomain)
+	if err == nil {
+		if existingRoute.TunnelID != req.TunnelID {
+			errorJSON(w, http.StatusConflict, "hostname is already in use by another tunnel")
+			return
+		}
+		route, createErr = s.supabase.UpdateRouteBinding(ctx, existingRoute.ID, req.TunnelID, target, enabled)
+	} else if errors.Is(err, ErrNotFound) {
 		route, createErr = s.supabase.CreateRoute(ctx, Route{
 			TunnelID: req.TunnelID,
 			Hostname: hostname,
 			Target:   target,
 			Enabled:  enabled,
 		})
-		if createErr == nil {
-			break
-		}
-		if !isRouteConflictError(createErr) {
-			break
-		}
+	} else {
+		createErr = err
 	}
 	if createErr != nil {
-		errorJSON(w, http.StatusBadGateway, createErr.Error())
+		status := http.StatusBadGateway
+		if strings.Contains(strings.ToLower(createErr.Error()), "hostname already exists") || isRouteConflictError(createErr) {
+			status = http.StatusConflict
+		}
+		errorJSON(w, status, createErr.Error())
 		return
 	}
 	s.events.Add("info", "route.added", req.TunnelID, fmt.Sprintf("%s => %s", route.Hostname, route.Target))

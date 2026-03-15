@@ -2,10 +2,10 @@
 
 ## 概述
 
-`allocate-domain` skill 让用户一句话即可为任何项目分配公网域名，**无需启动项目**。适合：
+`allocate-domain` skill 让用户一句话即可为任何本地服务注册公网域名，但注册后需启动本地 Agent 才能生效。适合：
 - 已有本地服务在运行，需要公网访问
-- 临时测试某个本地服务的公网访问
-- 快速为新项目分配域名而不关心启动方式
+- 想指定固定二级域名
+- 想让同一台机器上的多个服务共用一个 tunnel / 一个 agent
 
 ## 三种使用方式
 
@@ -24,9 +24,13 @@ allocate a public domain for my project on port 8080
 ```
 
 **Skill 会自动：**
-1. 从你的描述中提取项目名、端口、用户ID、域名
-2. 调用 API 注册 tunnel 并分配域名
-3. 返回公网地址和 agent 启动命令
+1. 优先提取端口和想用的二级域名，没说时再从项目基础配置里推断
+2. 默认按普通用户注册；只有明确说管理员覆盖时才使用管理员密钥
+3. 优先复用 `~/.tunneling/machine_state.json` 里的 tunnel 凭证
+4. 调用 API 注册 tunnel 或新增 route
+5. 返回公网地址和 agent 启动命令
+
+提示：如果未启动 Agent，公网访问通常会出现 502/404。
 
 ### 方式 2：直接运行脚本
 
@@ -57,19 +61,20 @@ allocate a public domain for my project on port 8080
 ✅ 域名分配成功！
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-公网地址: http://myproject-a8vau2.vyibc.com
+公网地址: http://myproject.vyibc.com
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 📌 完整信息：
-  Hostname: myproject-a8vau2.vyibc.com
+  Hostname: myproject.vyibc.com
   Tunnel ID: fa56413f-7261-44f0-b076-dccef24dc7e9
   Token: 4AzizZOBHF00DIb5qho-8ayo6IY8aMCLAYYVI0uCgu4
+  凭证文件: ~/.tunneling/machine_state.json
 ```
 
 ### 方式 3：API 直接调用
 
 ```bash
-curl -s -X POST 'http://152.32.214.95:3002/control/api/sessions/register' \
+curl -s -X POST 'https://domain.vyibc.com/api/sessions/register' \
   -H 'Content-Type: application/json' \
   -d '{
     "user_id": "alice",
@@ -87,7 +92,7 @@ curl -s -X POST 'http://152.32.214.95:3002/control/api/sessions/register' \
 | `PORT` | 本地服务端口 | `3000` | `5318`, `8080`, `4000` |
 | `USER_ID` | 用户标识 | `user` | `alice`, `bob`, `dev` |
 | `BASE_DOMAIN` | 域名后缀 | `vyibc.com` | `example.com`, `test.io` |
-| `API_URL` | API 服务地址 | `http://152.32.214.95:3002` | 自定义 API 地址 |
+| `API_URL` | API 服务地址 | `https://domain.vyibc.com` | 自定义 API 地址 |
 
 ## 返回的信息含义
 
@@ -95,18 +100,18 @@ curl -s -X POST 'http://152.32.214.95:3002/control/api/sessions/register' \
 
 ```json
 {
-  "public_url": "http://myproject-a8vau2.vyibc.com",
+  "public_url": "http://myproject.vyibc.com",
   "tunnel": {
     "id": "fa56413f-7261-44f0-b076-dccef24dc7e9",
     "name": "myproject-alice-uh81",
     "token": "4AzizZOBHF00DIb5qho-8ayo6IY8aMCLAYYVI0uCgu4"
   },
   "route": {
-    "hostname": "myproject-a8vau2.vyibc.com",
+    "hostname": "myproject.vyibc.com",
     "target": "127.0.0.1:3000",
     "is_enabled": true
   },
-  "agent_command": "./agent -server ws://152.32.214.95/connect -token 4AzizZOBHF00DIb5qho-8ayo6IY8aMCLAYYVI0uCgu4 ..."
+  "agent_command": "./agent -server ws://domain.vyibc.com/connect -token 4AzizZOBHF00DIb5qho-8ayo6IY8aMCLAYYVI0uCgu4 ... -config ~/.tunneling/machine-agent/config.json"
 }
 ```
 
@@ -130,7 +135,7 @@ npm run dev  # 运行在 localhost:3000
 ./scripts/allocate-domain.sh myproject 3000
 
 # 3. 得到公网地址后，别人可以通过这个地址访问你的本地服务
-✅ 公网地址：http://myproject-a8vau2.vyibc.com
+✅ 公网地址：http://myproject.vyibc.com
 ```
 
 ### 场景 2：为多个项目快速分配域名
@@ -177,18 +182,18 @@ Copilot 会自动：
 2. **启动 Agent**（可选）：如果想要长期保持连接
    ```bash
    # 使用返回的 agent_command
-   ./agent -server ws://152.32.214.95/connect \
+   ./agent -server ws://domain.vyibc.com/connect \
      -token 4AzizZOBHF00DIb5qho-8ayo6IY8aMCLAYYVI0uCgu4 \
      ...
    ```
 
-3. **管理域名**：访问 http://152.32.214.95:3002 管理 tunnel 和 route
+3. **管理域名**：访问 https://domain.vyibc.com/login 管理 tunnel 和 route
 
 ## 故障排除
 
 ### 问题：API 返回错误
-**症状**：`curl: (7) Failed to connect to 152.32.214.95 port 3002`
-**解决**：检查网络连接，确保能访问 http://152.32.214.95:3002
+**症状**：`curl: (7) Failed to connect to domain.vyibc.com`
+**解决**：检查网络连接，确保能访问 https://domain.vyibc.com
 
 ### 问题：域名分配成功但访问失败
 **症状**：`404 Not Found` 或 `Connection refused`
@@ -198,11 +203,11 @@ Copilot 会自动：
 3. 启动本地服务：`npm run dev`（如果还没启动）
 
 ### 问题：获得的域名已被使用
-**症状**：`API 返回 409 Conflict`
-**解决**：脚本会自动重试生成新的随机后缀，等待几秒后重新运行
+**症状**：你期望得到 `myapp.vyibc.com`，但返回了 `myapp-xxxxxx.vyibc.com`
+**解决**：说明固定二级域名已被占用。普通用户会自动回退到随机后缀域名；管理员可显式带 `admin_key` 覆盖固定域名
 
 ## 参考链接
 
 - Skill 源代码：`skills/allocate-domain/`
-- API 文档：`docs/PROJECT_ONBOARDING.md`
-- Control API：`http://152.32.214.95:3002/control/api/`
+- API 文档：`https://domain.vyibc.com/api-docs`
+- Control API：`https://domain.vyibc.com/api/`

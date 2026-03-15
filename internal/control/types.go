@@ -27,16 +27,18 @@ type Route struct {
 }
 
 type RegisterSessionRequest struct {
-	UserID     string         `json:"user_id"`
-	Project    string         `json:"project"`
-	Target     string         `json:"target"`
-	BaseDomain string         `json:"base_domain"`
-	Subdomain  string         `json:"subdomain,omitempty"`
-	Enabled    *bool          `json:"enabled,omitempty"`
-	AdminKey   string         `json:"admin_key,omitempty"`
-	ClientIP   string         `json:"client_ip,omitempty"`
-	OSType     string         `json:"os_type,omitempty"`
-	Metadata   map[string]any `json:"metadata,omitempty"`
+	UserID      string         `json:"user_id"`
+	Project     string         `json:"project"`
+	Target      string         `json:"target"`
+	BaseDomain  string         `json:"base_domain"`
+	Subdomain   string         `json:"subdomain,omitempty"`
+	TunnelID    string         `json:"tunnel_id,omitempty"`
+	TunnelToken string         `json:"tunnel_token,omitempty"`
+	Enabled     *bool          `json:"enabled,omitempty"`
+	AdminKey    string         `json:"admin_key,omitempty"`
+	ClientIP    string         `json:"client_ip,omitempty"`
+	OSType      string         `json:"os_type,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
 }
 
 type AgentRoutesResponse struct {

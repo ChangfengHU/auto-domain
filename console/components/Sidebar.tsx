@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { LayoutDashboard, Network, Users, Settings, LogOut, Activity } from 'lucide-react'
+import { LayoutDashboard, Network, Users, Settings, LogOut, Activity, FileText } from 'lucide-react'
 import { createClient } from '@/utils/supabase/client'
 import { useRouter } from 'next/navigation'
 
@@ -57,6 +57,16 @@ export default function Sidebar({
                     >
                         <Network className="text-indigo-300 mr-3 h-5 w-5" />
                         Tunnels & Routes
+                    </Link>
+                    <Link
+                        href="/api-docs"
+                        className={`group flex items-center px-3 py-2.5 text-sm font-medium rounded-lg transition-colors ${pathname === '/api-docs'
+                                ? 'bg-indigo-800 shadow-inner text-white'
+                                : 'text-indigo-100 hover:bg-indigo-800/80 hover:text-white'
+                            }`}
+                    >
+                        <FileText className="text-indigo-300 mr-3 h-5 w-5" />
+                        API Docs
                     </Link>
                 </nav>
 

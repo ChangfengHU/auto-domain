@@ -1,38 +1,38 @@
 # 新项目接入文档（内网穿透）
 
-本文用于把一个新的 Next.js/React 项目快速接入现有 tunneling 平台，并拿到可访问的公网二级域名。
+本文用于把一个新的本地项目快速接入现有 tunneling 平台，并拿到可访问的公网二级域名。
 
 ## 1. 前置条件
 
-- 你的控制台/API 已可访问：`http://152.32.214.95:3002/control`
-- DNS 已托管到 Cloudflare，且二级域名可解析到你的网关
+- 对外接入地址：`https://domain.vyibc.com`
+- 公开接口文档：`https://domain.vyibc.com/api-docs`
 - 本地已安装 `node` / `npm` / `python3` / `curl`
 - 不要求预装 agent，`project-tunnel.sh` 会自动下载
 
 ## 2. 一键接入（推荐）
 
-把 `scripts/project-tunnel.sh` 放到你的项目根目录，执行：
+把 [project-tunnel.sh](/Users/huchangfeng/code/tunneling/scripts/project-tunnel.sh) 放到项目根目录，执行：
 
 ```bash
 chmod +x ./project-tunnel.sh
 ./project-tunnel.sh start
 ```
 
-指定端口启动（两种方式）：
+指定端口启动：
 
 ```bash
 ./project-tunnel.sh start --port 5318
-# 或
 ./project-tunnel.sh start 5318
 ```
 
-默认会自动：
+这套脚本默认会：
 
 - 从当前目录读取项目名和端口（`package.json.name`、`.tunnel-port`、`.env`）
-- 使用固定域名模式：`<project>-<user>.vyibc.com`
-- 自动下载 agent（平台：`darwin-arm64` / `darwin-amd64` / `linux-amd64` / `windows-amd64`）
-- 启动项目和 agent，并输出 `public_url`
-- 若 hostname 已存在，会自动强制更新映射到当前 tunnel/端口（支持动态改端口）
+- 优先复用 `~/.tunneling/machine_state.json` 里的 tunnel 凭证
+- 保持同一台机器只跑一个 agent
+- 先尝试固定二级域名
+- 固定域名冲突时，普通用户自动回退到随机后缀域名
+- 管理员模式下可覆盖固定域名
 
 常用命令：
 
@@ -41,14 +41,12 @@ chmod +x ./project-tunnel.sh
 ./project-tunnel.sh stop
 ```
 
-`stop` 会自动把该 hostname 置为 `enabled=false`（下线映射），避免服务已停但域名仍可路由到旧地址。
+## 3. 手动调用注册接口
 
-## 3. 一次性注册 Tunnel + 子域名（手动方式）
-
-推荐使用会话注册接口（避免 tunnel/域名冲突）：
+最小注册示例：
 
 ```bash
-curl -sS -X POST 'http://152.32.214.95:3002/control/api/sessions/register' \
+curl -sS -X POST 'https://domain.vyibc.com/api/sessions/register' \
   -H 'Content-Type: application/json' \
   --data-raw '{
     "user_id": "u-hcf",
@@ -62,93 +60,93 @@ curl -sS -X POST 'http://152.32.214.95:3002/control/api/sessions/register' \
 
 - `tunnel.id`
 - `tunnel.token`
-- `route.hostname`（随机后缀，避免冲突）
+- `route.hostname`
 - `public_url`
 - `agent_command`
 
-## 4. 启动项目（生产模式）
+当前二级域名规则：
 
-不要用 `next dev`，要用生产模式：
+- 传了 `subdomain`：先尝试 `subdomain.vyibc.com`
+- 没传 `subdomain`：先尝试 `project.vyibc.com`
+- 普通用户遇到固定域名冲突：自动回退到 `project-随机后缀.vyibc.com`
+- 管理员带 `admin_key`：可直接覆盖固定域名
+
+## 4. 复用单机单 Agent
+
+推荐把第一次注册返回的凭证保存在：
+
+- `~/.tunneling/machine_state.json`
+
+文件里至少保存：
+
+- `tunnel_id`
+- `tunnel_token`
+
+后续同一台机器新增其他服务时，把这两个字段一起传给 `/api/sessions/register`，接口就只会新增 route，不会再创建第二个 tunnel / agent。
+
+示例：
 
 ```bash
-cd /path/to/your-project
-npm install
-npm run build
-npm run start -- -p 5318
+curl -sS -X POST 'https://domain.vyibc.com/api/sessions/register' \
+  -H 'Content-Type: application/json' \
+  --data-raw '{
+    "user_id": "u-hcf",
+    "project": "admin",
+    "subdomain": "admin",
+    "base_domain": "vyibc.com",
+    "target": "127.0.0.1:3001",
+    "tunnel_id": "YOUR_TUNNEL_ID",
+    "tunnel_token": "YOUR_TUNNEL_TOKEN"
+  }'
 ```
 
-说明：
+## 5. 启动本地 Agent
 
-- 端口可改，但要和注册时 `target` 一致
-- 生产模式首屏更快、更稳定
+直接使用注册接口返回的 `agent_command` 即可。
 
-## 5. 启动 Agent（二选一）
-
-### 4.1 直接二进制启动
+典型格式：
 
 ```bash
-/path/to/tunneling/bin/agent \
-  -server ws://152.32.214.95/connect \
+./agent \
+  -server ws://domain.vyibc.com/connect \
   -token <tunnel_token> \
-  -route-sync-url http://152.32.214.95/_tunnel/agent/routes \
+  -route-sync-url https://domain.vyibc.com/_tunnel/agent/routes \
   -tunnel-id <tunnel_id> \
   -tunnel-token <tunnel_token> \
-  -admin-addr 127.0.0.1:17005
+  -admin-addr 127.0.0.1:17005 \
+  -config ~/.tunneling/machine-agent/config.json
 ```
 
-### 4.2 Docker 启动（推荐长期运行）
-
-先准备 `agent.env`（可参考 `deploy/examples/agent.env.example`）：
-
-- `TUNNEL_ID=<tunnel_id>`
-- `AGENT_TOKEN=<tunnel_token>`
-- `TUNNEL_TOKEN=<tunnel_token>`
-- `SERVER_WS=ws://152.32.214.95/connect`
-- `ROUTE_SYNC_URL=http://152.32.214.95/_tunnel/agent/routes`
-- `ADMIN_ADDR=0.0.0.0:17005`
-
-执行：
-
-```bash
-cd /Users/huchangfeng/code/tunneling
-./scripts/agent-deploy-local.sh
-```
-
-如果 agent 在 Docker 中，目标项目建议填 `host.docker.internal:<port>`，不要填 `127.0.0.1:<port>`。
+如果 agent 在 Docker 中，目标服务建议填 `host.docker.internal:<port>`，不要填 `127.0.0.1:<port>`。
 
 ## 6. 验证
 
 ```bash
-# 1) 看 agent 是否在线
 curl -sS http://127.0.0.1:17005/api/status
-
-# 2) 看域名是否可访问
 curl -I http://<your-subdomain>.vyibc.com/
 ```
 
 预期：
 
 - `api/status` 中 `connected=true`
-- 域名返回 `200`（或业务页面状态码）
+- 公网域名能返回业务响应
 
-## 7. 常见问题排查
+## 7. 常见问题
 
-- `404 page not found`：
+- `404 page not found`
   - route 已写入，但该 tunnel 的 agent 没连上
-- `502 bad gateway`：
+- `502 bad gateway`
   - agent 已连上，但 target 端口服务未启动或端口写错
-- 首屏慢（7-10 秒）：
-  - 项目使用了 `next dev` 或项目冷启动慢；改为 `npm run build && npm run start`
-- 域名冲突：
-  - 不要手工复用固定二级域名，优先使用 `sessions/register` 自动生成随机后缀
+- 返回了带随机后缀的域名
+  - 说明你想要的固定二级域名已被占用，系统自动回退了随机后缀
+- 想强制绑定固定域名
+  - 需要管理员显式带 `admin_key`
 
-## 8. 推荐接入方式（标准化）
+## 8. 推荐标准化方式
 
-每个项目目录放一个统一脚本 `start-with-tunnel.sh`，脚本做 4 件事：
+每台机器只维护一套共享状态：
 
-1. 调 `sessions/register` 获取 tunnel + 子域名  
-2. `npm run build && npm run start -- -p <port>`  
-3. 启动 agent（带返回的 tunnel/token）  
-4. 输出 `public_url` 并做健康检查
+- `~/.tunneling/machine_state.json`
+- `~/.tunneling/machine-agent/config.json`
 
-这样新项目接入只需执行一条命令。
+这样所有项目都复用同一个 tunnel / agent，只是不断新增 route。

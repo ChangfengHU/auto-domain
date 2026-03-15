@@ -16,6 +16,23 @@ set -euo pipefail
 RAW_BASE="https://raw.githubusercontent.com/ChangfengHU/auto-domain/main"
 SKILL_NAME="allocate-domain"
 TARGET=""
+DOCS_URL="https://domain.vyibc.com/api-docs"
+PUBLIC_BASE_URL="https://domain.vyibc.com"
+
+print_done() {
+  echo ""
+  echo "✅ 安装完成！"
+  echo ""
+  echo "现在你可以直接对 AI 说："
+  echo "  给我的 myapp 项目分配一个公网域名，它在 localhost:3000 运行"
+  echo ""
+  echo "也可以查看公开接入文档："
+  echo "  ${DOCS_URL}"
+  echo ""
+  echo "如果你想直接调用 HTTP API，请使用："
+  echo "  ${PUBLIC_BASE_URL}/api/sessions/register"
+  echo ""
+}
 
 # ── 参数解析 ─────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -41,7 +58,7 @@ if [[ -z "$TARGET" ]]; then
   echo "  3) Claude       (~/.claude/plugins/)"
   echo "  4) Gemini       (~/.gemini/skills/)"
   echo "  5) Antigravity  (~/.gemini/antigravity/knowledge/)"
-  echo "  6) Copilot      (~/.copilot/skills/)"
+  echo "  6) Copilot      (~/.github-copilot/skills/)"
   echo "  7) 全部安装"
   echo ""
   read -rp "请输入编号 [1-7]: " CHOICE
@@ -108,7 +125,7 @@ install_antigravity() {
 }
 
 install_copilot() {
-  local dir="${HOME}/.copilot/skills/${SKILL_NAME}"
+  local dir="${HOME}/.github-copilot/skills/${SKILL_NAME}"
   echo "  📦 Copilot → $dir"
   mkdir -p "$dir/agents"
   fetch "${SKILL_NAME}/SKILL.md"           "$dir/SKILL.md"
@@ -139,9 +156,4 @@ case "$TARGET" in
 esac
 
 # ── 完成 ─────────────────────────────────────────────────
-echo ""
-echo "✅ 安装完成！"
-echo ""
-echo "现在你可以对 AI 说："
-echo "   给我的 myapp 项目分配一个公网域名，它在 localhost:3000 运行"
-echo ""
+print_done
