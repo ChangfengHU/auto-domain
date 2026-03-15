@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Plus, Server, XCircle, Search, Settings as SettingsIcon, Trash2, Copy, Check, Play, ShieldAlert, Pencil, X } from 'lucide-react'
+import { Plus, Server, XCircle, Search, Settings as SettingsIcon, Trash2, Copy, Check, Play, ShieldAlert, Pencil, X, AlertTriangle } from 'lucide-react'
 import { createClient } from '@/utils/supabase/client'
 
 export default function TunnelsPage() {
@@ -14,6 +14,13 @@ export default function TunnelsPage() {
     const [editingHostname, setEditingHostname] = useState('')
     const [editError, setEditError] = useState('')
     const [editSaving, setEditSaving] = useState(false)
+    const [deletingTunnelId, setDeletingTunnelId] = useState<string | null>(null)
+    const [deletingRouteId, setDeletingRouteId] = useState<string | null>(null)
+    const [deleteConfirming, setDeleteConfirming] = useState(false)
+    const [deleteError, setDeleteError] = useState('')
+    const [currentPage, setCurrentPage] = useState(1)
+    const [searchQuery, setSearchQuery] = useState('')
+    const itemsPerPage = 10
     const supabase = createClient()
 
     const copyTunnelId = (id: string) => {
@@ -71,6 +78,61 @@ export default function TunnelsPage() {
         }
     }
 
+    const deleteRoute = async (routeId: string) => {
+        setDeleteError('')
+        try {
+            const res = await fetch(`/api/admin/routes/${routeId}`, {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+            })
+            if (!res.ok) {
+                const data = await res.json()
+                setDeleteError(data.error ?? '删除失败')
+                return
+            }
+            // Update local state - remove the route
+            setTunnels(prev => prev.map(t => ({
+                ...t,
+                tunnel_routes: t.tunnel_routes.filter((r: any) => r.id !== routeId),
+                routes: (t.tunnel_routes?.length || 0) - 1,
+            })))
+            if (selectedTunnel) {
+                const updatedRoutes = selectedTunnel.tunnel_routes.filter((r: any) => r.id !== routeId)
+                setSelectedTunnel((prev: any) => ({
+                    ...prev,
+                    tunnel_routes: updatedRoutes,
+                    routes: updatedRoutes.length,
+                }))
+            }
+            setDeleteConfirming(false)
+            setDeletingRouteId(null)
+        } catch {
+            setDeleteError('网络错误，请重试')
+        }
+    }
+
+    const deleteTunnel = async (tunnelId: string) => {
+        setDeleteError('')
+        try {
+            const res = await fetch(`/api/admin/tunnels/${tunnelId}`, {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+            })
+            if (!res.ok) {
+                const data = await res.json()
+                setDeleteError(data.error ?? '删除失败')
+                return
+            }
+            // Update local state - remove the tunnel
+            setTunnels(prev => prev.filter(t => t.id !== tunnelId))
+            setSelectedTunnel(null)
+            setDeleteConfirming(false)
+            setDeletingTunnelId(null)
+        } catch {
+            setDeleteError('网络错误，请重试')
+        }
+    }
+
     useEffect(() => {
         const init = async () => {
             setLoading(true)
@@ -89,7 +151,7 @@ export default function TunnelsPage() {
             const { data, error } = await supabase
                 .from('tunnel_instances')
                 .select(`
-                    id, name, status, created_at, token_hash, owner_id, project_key,
+                    id, name, status, created_at, updated_at, token_hash, owner_id, project_key, client_ip, os_type,
                     tunnel_routes ( id, hostname, target, is_enabled )
                 `)
                 .order('created_at', { ascending: false })
@@ -137,6 +199,11 @@ export default function TunnelsPage() {
                         </div>
                         <input
                             type="text"
+                            value={searchQuery}
+                            onChange={(e) => {
+                                setSearchQuery(e.target.value)
+                                setCurrentPage(1)
+                            }}
                             className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md leading-5 bg-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
                             placeholder="Search by ID, name, or domain..."
                         />
@@ -150,13 +217,25 @@ export default function TunnelsPage() {
                                 <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Tunnel</th>
                                 {isAdmin && <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Owner / Project</th>}
                                 <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
+                                {isAdmin && <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Client IP</th>}
+                                {isAdmin && <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Device</th>}
                                 <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Routes</th>
                                 <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Created</th>
                                 <th className="px-6 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">Action</th>
                             </tr>
                         </thead>
                         <tbody className="bg-white divide-y divide-gray-200">
-                            {tunnels.map((t) => (
+                            {(() => {
+                                const filtered = tunnels.filter(t =>
+                                    searchQuery === '' ||
+                                    t.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                                    t.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                                    (t.tunnel_routes?.some((r: any) => r.hostname.toLowerCase().includes(searchQuery.toLowerCase())))
+                                )
+                                const total = filtered.length
+                                const start = (currentPage - 1) * itemsPerPage
+                                const paginated = filtered.slice(start, start + itemsPerPage)
+                                return paginated.map((t) => (
                                 <tr key={t.id} className="hover:bg-indigo-50/50 transition-colors cursor-pointer group" onClick={() => setSelectedTunnel(t)}>
                                     <td className="px-6 py-4 whitespace-nowrap">
                                         <div className="flex items-center">
@@ -186,6 +265,25 @@ export default function TunnelsPage() {
                                             </span>
                                         )}
                                     </td>
+                                    {isAdmin && (
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-600">
+                                            {t.client_ip || <span className="text-gray-400">—</span>}
+                                        </td>
+                                    )}
+                                    {isAdmin && (
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                                            {t.os_type ? (
+                                                <span className="inline-flex items-center px-2 py-1 rounded bg-blue-50 text-blue-700 text-xs font-medium">
+                                                    {t.os_type === 'mac' && '🍎 macOS'}
+                                                    {t.os_type === 'linux' && '🐧 Linux'}
+                                                    {t.os_type === 'windows' && '🪟 Windows'}
+                                                    {!['mac', 'linux', 'windows'].includes(t.os_type) && t.os_type}
+                                                </span>
+                                            ) : (
+                                                <span className="text-gray-400">—</span>
+                                            )}
+                                        </td>
+                                    )}
                                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                                         <span className="inline-flex items-center font-semibold bg-gray-100 px-2 py-0.5 rounded text-gray-600">{t.routes}</span>
                                     </td>
@@ -196,10 +294,11 @@ export default function TunnelsPage() {
                                         </button>
                                     </td>
                                 </tr>
-                            ))}
+                            ))
+                            })()}
                             {!loading && tunnels.length === 0 && (
                                 <tr>
-                                    <td colSpan={isAdmin ? 6 : 5} className="px-6 py-12 text-center text-sm text-gray-500">
+                                    <td colSpan={isAdmin ? 8 : 5} className="px-6 py-12 text-center text-sm text-gray-500">
                                         <Server className="mx-auto h-12 w-12 text-gray-300 mb-3" />
                                         <p className="font-semibold text-gray-900">No tunnels found</p>
                                         <p className="mt-1">Get started by creating a new tunnel from the CLI or dashboard.</p>
@@ -209,6 +308,42 @@ export default function TunnelsPage() {
                         </tbody>
                     </table>
                 </div>
+
+                {/* Pagination */}
+                {tunnels.length > itemsPerPage && (
+                    <div className="px-6 py-4 border-t border-gray-200 bg-gray-50 flex items-center justify-between">
+                        <div className="text-sm text-gray-500">
+                            Showing <span className="font-semibold">{((currentPage - 1) * itemsPerPage) + 1}</span> to <span className="font-semibold">{Math.min(currentPage * itemsPerPage, tunnels.filter(t => searchQuery === '' || t.id.toLowerCase().includes(searchQuery.toLowerCase()) || t.name.toLowerCase().includes(searchQuery.toLowerCase()) || (t.tunnel_routes?.some((r: any) => r.hostname.toLowerCase().includes(searchQuery.toLowerCase())))).length)}</span> of <span className="font-semibold">{tunnels.filter(t => searchQuery === '' || t.id.toLowerCase().includes(searchQuery.toLowerCase()) || t.name.toLowerCase().includes(searchQuery.toLowerCase()) || (t.tunnel_routes?.some((r: any) => r.hostname.toLowerCase().includes(searchQuery.toLowerCase())))).length}</span> tunnels
+                        </div>
+                        <div className="flex gap-2">
+                            <button
+                                onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                                disabled={currentPage === 1}
+                                className="px-3 py-1.5 text-sm font-medium border border-gray-300 rounded-md hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                            >
+                                Previous
+                            </button>
+                            <div className="flex items-center gap-1 px-2">
+                                {Array.from({ length: Math.ceil(tunnels.filter(t => searchQuery === '' || t.id.toLowerCase().includes(searchQuery.toLowerCase()) || t.name.toLowerCase().includes(searchQuery.toLowerCase()) || (t.tunnel_routes?.some((r: any) => r.hostname.toLowerCase().includes(searchQuery.toLowerCase())))).length / itemsPerPage) }).map((_, i) => (
+                                    <button
+                                        key={i + 1}
+                                        onClick={() => setCurrentPage(i + 1)}
+                                        className={`w-8 h-8 text-sm font-medium rounded transition-colors ${currentPage === i + 1 ? 'bg-indigo-600 text-white' : 'border border-gray-300 hover:bg-gray-100'}`}
+                                    >
+                                        {i + 1}
+                                    </button>
+                                ))}
+                            </div>
+                            <button
+                                onClick={() => setCurrentPage(prev => prev + 1)}
+                                disabled={currentPage >= Math.ceil(tunnels.filter(t => searchQuery === '' || t.id.toLowerCase().includes(searchQuery.toLowerCase()) || t.name.toLowerCase().includes(searchQuery.toLowerCase()) || (t.tunnel_routes?.some((r: any) => r.hostname.toLowerCase().includes(searchQuery.toLowerCase())))).length / itemsPerPage)}
+                                className="px-3 py-1.5 text-sm font-medium border border-gray-300 rounded-md hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                            >
+                                Next
+                            </button>
+                        </div>
+                    </div>
+                )}
             </div>
 
             {/* Slide-over Drawer */}
@@ -244,6 +379,32 @@ export default function TunnelsPage() {
                                         <div>
                                             <span className="text-purple-500 text-xs">Project Key</span>
                                             <p className="font-mono text-gray-800 text-xs break-all">{selectedTunnel.project_key || '—'}</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                            {isAdmin && (selectedTunnel.client_ip || selectedTunnel.os_type) && (
+                                <div className="mb-4 bg-cyan-50 border border-cyan-200 rounded-xl p-4">
+                                    <h4 className="text-xs font-bold text-cyan-700 uppercase tracking-wide mb-2">Client Info</h4>
+                                    <div className="grid grid-cols-2 gap-2 text-sm">
+                                        <div>
+                                            <span className="text-cyan-500 text-xs">Client IP</span>
+                                            <p className="font-mono text-gray-800 text-xs break-all">{selectedTunnel.client_ip || '—'}</p>
+                                        </div>
+                                        <div>
+                                            <span className="text-cyan-500 text-xs">Device</span>
+                                            <p className="text-gray-800 text-xs">
+                                                {selectedTunnel.os_type ? (
+                                                    <>
+                                                        {selectedTunnel.os_type === 'mac' && '🍎 macOS'}
+                                                        {selectedTunnel.os_type === 'linux' && '🐧 Linux'}
+                                                        {selectedTunnel.os_type === 'windows' && '🪟 Windows'}
+                                                        {!['mac', 'linux', 'windows'].includes(selectedTunnel.os_type) && selectedTunnel.os_type}
+                                                    </>
+                                                ) : (
+                                                    '—'
+                                                )}
+                                            </p>
                                         </div>
                                     </div>
                                 </div>
@@ -295,9 +456,25 @@ export default function TunnelsPage() {
                                                             </div>
                                                         ) : (
                                                             <div className="flex items-center gap-1.5 group/hostname">
-                                                                <span>{route.hostname}</span>
+                                                                {isAdmin ? (
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => startEditRoute(route)}
+                                                                        className="text-left text-indigo-600 hover:text-indigo-800 hover:underline font-mono"
+                                                                        title="点击修改域名"
+                                                                    >
+                                                                        {route.hostname}
+                                                                    </button>
+                                                                ) : (
+                                                                    <span className="font-mono">{route.hostname}</span>
+                                                                )}
                                                                 {isAdmin && (
-                                                                    <button onClick={() => startEditRoute(route)} className="opacity-0 group-hover/hostname:opacity-100 text-gray-400 hover:text-indigo-600 transition-opacity">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => startEditRoute(route)}
+                                                                        className="text-gray-400 hover:text-indigo-600 transition-opacity sm:opacity-0 sm:group-hover/hostname:opacity-100"
+                                                                        title="修改域名"
+                                                                    >
                                                                         <Pencil className="w-3.5 h-3.5" />
                                                                     </button>
                                                                 )}
@@ -305,10 +482,23 @@ export default function TunnelsPage() {
                                                         )}
                                                     </td>
                                                     <td className="px-4 py-3 text-sm font-mono text-gray-600 bg-gray-50 rounded">{route.target}</td>
-                                                    <td className="px-4 py-3 text-sm text-right">
+                                                    <td className="px-4 py-3 text-sm text-right flex items-center justify-end gap-2">
                                                         <button className={`relative inline-flex items-center h-5 w-9 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 ${route.is_enabled ? 'bg-emerald-500' : 'bg-gray-300'}`}>
                                                             <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform ${route.is_enabled ? 'translate-x-4' : 'translate-x-0'}`} />
                                                         </button>
+                                                        {isAdmin && (
+                                                            <button
+                                                                onClick={() => {
+                                                                    setDeletingRouteId(route.id)
+                                                                    setDeleteConfirming(true)
+                                                                    setDeleteError('')
+                                                                }}
+                                                                className="text-red-500 hover:text-red-700 hover:bg-red-50 p-1.5 rounded transition-colors"
+                                                                title="删除路由"
+                                                            >
+                                                                <Trash2 className="w-4 h-4" />
+                                                            </button>
+                                                        )}
                                                     </td>
                                                 </tr>
                                             ))}
@@ -329,8 +519,67 @@ export default function TunnelsPage() {
                                     <h4 className="text-sm font-bold text-red-800">Danger Zone</h4>
                                     <p className="text-xs text-red-600 mt-1">Permanently delete this tunnel and all associated routes. This action cannot be undone.</p>
                                 </div>
-                                <button className="flex-shrink-0 bg-red-100 hover:bg-red-200 text-red-700 text-sm font-bold py-2 px-3 rounded text-center border border-red-300 transition-colors flex items-center">
+                                <button
+                                    onClick={() => {
+                                        setDeletingTunnelId(selectedTunnel.id)
+                                        setDeleteConfirming(true)
+                                        setDeleteError('')
+                                    }}
+                                    className="flex-shrink-0 bg-red-100 hover:bg-red-200 text-red-700 text-sm font-bold py-2 px-3 rounded text-center border border-red-300 transition-colors flex items-center">
                                     <Trash2 className="w-4 h-4 mr-1.5" /> Delete
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </>
+            )}
+
+            {/* Delete Confirmation Modal */}
+            {deleteConfirming && (
+                <>
+                    <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                        <div className="bg-white rounded-lg shadow-xl max-w-sm w-full transform transition-all">
+                            <div className="p-6">
+                                <div className="flex items-center justify-center w-12 h-12 mx-auto bg-red-100 rounded-full">
+                                    <AlertTriangle className="w-6 h-6 text-red-600" />
+                                </div>
+                                <h3 className="mt-4 text-lg font-bold text-gray-900 text-center">
+                                    {deletingRouteId ? '删除路由？' : '删除隧道？'}
+                                </h3>
+                                <p className="mt-2 text-sm text-gray-500 text-center">
+                                    {deletingRouteId
+                                        ? '该路由将被永久删除，无法恢复。'
+                                        : '该隧道及其所有路由将被永久删除，无法恢复。'}
+                                </p>
+                                {deleteError && (
+                                    <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-md">
+                                        <p className="text-sm text-red-700">{deleteError}</p>
+                                    </div>
+                                )}
+                            </div>
+                            <div className="bg-gray-50 px-6 py-4 flex gap-3 justify-end border-t border-gray-200 rounded-b-lg">
+                                <button
+                                    onClick={() => {
+                                        setDeleteConfirming(false)
+                                        setDeletingTunnelId(null)
+                                        setDeletingRouteId(null)
+                                        setDeleteError('')
+                                    }}
+                                    className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+                                >
+                                    取消
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        if (deletingRouteId) {
+                                            deleteRoute(deletingRouteId)
+                                        } else if (deletingTunnelId) {
+                                            deleteTunnel(deletingTunnelId)
+                                        }
+                                    }}
+                                    className="px-4 py-2 text-sm font-bold text-white bg-red-600 border border-red-600 rounded-md hover:bg-red-700 transition-colors flex items-center"
+                                >
+                                    <Trash2 className="w-4 h-4 mr-1.5" /> 确认删除
                                 </button>
                             </div>
                         </div>
