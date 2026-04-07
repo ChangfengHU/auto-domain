@@ -21,6 +21,8 @@ import (
 
 type Server struct {
 	supabase        *SupabaseClient
+	publicBaseURL   string
+	publicURLScheme string
 	agentServerWS   string
 	agentConfigURL  string
 	defaultAdminAPI string
@@ -28,11 +30,30 @@ type Server struct {
 	events          *EventStore
 }
 
-func NewServer(supabase *SupabaseClient, agentServerWS, agentConfigURL, defaultAdminAPI, adminKey string) *Server {
+func NewServer(supabase *SupabaseClient, publicBaseURL, agentServerWS, agentConfigURL, defaultAdminAPI, adminKey string) *Server {
+	publicBaseURL = strings.TrimSpace(strings.TrimRight(publicBaseURL, "/"))
+	agentServerWS = strings.TrimSpace(agentServerWS)
+	if agentServerWS == "" {
+		agentServerWS = mustWSURL(publicBaseURL)
+	}
+	if agentServerWS == "" {
+		agentServerWS = "ws://127.0.0.1:9000/connect"
+	}
+
+	agentConfigURL = strings.TrimSpace(agentConfigURL)
+	if agentConfigURL == "" {
+		agentConfigURL = mustHTTPURL(publicBaseURL, "/_tunnel/agent/routes")
+	}
+	if agentConfigURL == "" {
+		agentConfigURL = "http://127.0.0.1:18100/agent/routes"
+	}
+
 	return &Server{
 		supabase:        supabase,
-		agentServerWS:   strings.TrimSpace(agentServerWS),
-		agentConfigURL:  strings.TrimSpace(agentConfigURL),
+		publicBaseURL:   publicBaseURL,
+		publicURLScheme: publicURLScheme(publicBaseURL),
+		agentServerWS:   agentServerWS,
+		agentConfigURL:  agentConfigURL,
 		defaultAdminAPI: strings.TrimSpace(defaultAdminAPI),
 		adminKey:        strings.TrimSpace(adminKey),
 		events:          NewEventStore(2000),
@@ -411,7 +432,7 @@ func (s *Server) handleSessionRegister(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"tunnel":         tunnel,
 		"route":          route,
-		"public_url":     "http://" + hostname,
+		"public_url":     s.publicURL(hostname),
 		"agent_command":  s.agentCommand(tunnel.ID, tunnel.Token),
 		"docker_command": s.dockerCommand(tunnel.ID, tunnel.Token),
 	})
@@ -680,6 +701,14 @@ func (s *Server) dockerCommand(tunnelID, token string) string {
 	}
 	return fmt.Sprintf("docker run -d --name tunneling-agent --restart always -p %s:17001 -v $HOME/.tunneling/machine-agent:/data registry.cn-hangzhou.aliyuncs.com/vyibc/tunneling-agent:latest -server %s -token %s -route-sync-url %s -tunnel-id %s -tunnel-token %s -admin-addr 0.0.0.0:17001 -config /data/config.json",
 		adminPort, s.agentServerWS, token, s.agentConfigURL, tunnelID, token)
+}
+
+func (s *Server) publicURL(hostname string) string {
+	scheme := s.publicURLScheme
+	if scheme == "" {
+		scheme = "http"
+	}
+	return fmt.Sprintf("%s://%s", scheme, hostname)
 }
 
 func decodeJSON(body io.Reader, out any) error {
@@ -1056,7 +1085,7 @@ func (s *Server) handlePortalAddRoute(w http.ResponseWriter, r *http.Request) {
 	s.events.Add("info", "route.added", req.TunnelID, fmt.Sprintf("%s => %s", route.Hostname, route.Target))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"route":      route,
-		"public_url": "http://" + route.Hostname,
+		"public_url": s.publicURL(route.Hostname),
 	})
 }
 
@@ -1091,4 +1120,52 @@ func mustWSURL(baseURL string) string {
 	u.Path = "/connect"
 	u.RawQuery = ""
 	return u.String()
+}
+
+func mustHTTPURL(baseURL, path string) string {
+	baseURL = strings.TrimSpace(strings.TrimRight(baseURL, "/"))
+	if baseURL == "" {
+		return ""
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		log.Printf("invalid url: %v", err)
+		return ""
+	}
+	switch u.Scheme {
+	case "wss":
+		u.Scheme = "https"
+	case "ws":
+		u.Scheme = "http"
+	case "https", "http":
+	default:
+		if strings.HasPrefix(baseURL, "wss://") {
+			u.Scheme = "https"
+		} else {
+			u.Scheme = "http"
+		}
+	}
+	u.Path = path
+	u.RawQuery = ""
+	return u.String()
+}
+
+func publicURLScheme(baseURL string) string {
+	baseURL = strings.TrimSpace(strings.TrimRight(baseURL, "/"))
+	if baseURL == "" {
+		return ""
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		log.Printf("invalid url: %v", err)
+		return ""
+	}
+	switch u.Scheme {
+	case "https", "wss":
+		return "https"
+	case "http", "ws":
+		return "http"
+	default:
+		return ""
+	}
 }

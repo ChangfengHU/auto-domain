@@ -12,5 +12,7 @@ scripts/start-*.sh
 .DS_Store
 .env.control
 .env.local.*.bak
-control
+/agent
+/control
+/server
 /dist/

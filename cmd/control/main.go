@@ -18,8 +18,9 @@ func main() {
 
 	supabaseURL := envOr("SUPABASE_URL", "")
 	supabaseKey := envOr("SUPABASE_SERVICE_ROLE_KEY", "")
-	agentServerWS := envOr("AGENT_SERVER_WS", "ws://127.0.0.1/connect")
-	agentConfigURL := envOr("AGENT_CONFIG_URL", "http://127.0.0.1:18100/agent/routes")
+	publicBaseURL := envOr("PUBLIC_BASE_URL", "")
+	agentServerWS := envOr("AGENT_SERVER_WS", "")
+	agentConfigURL := envOr("AGENT_CONFIG_URL", "")
 	defaultAdminAddr := envOr("DEFAULT_AGENT_ADMIN_ADDR", "127.0.0.1:17001")
 	adminKey := envOr("TUNNELING_ADMIN_KEY", "")
 
@@ -28,7 +29,14 @@ func main() {
 		log.Fatalf("supabase init failed: %v", err)
 	}
 
-	srv := control.NewServer(client, strings.TrimSpace(agentServerWS), strings.TrimSpace(agentConfigURL), strings.TrimSpace(defaultAdminAddr), adminKey)
+	srv := control.NewServer(
+		client,
+		strings.TrimSpace(publicBaseURL),
+		strings.TrimSpace(agentServerWS),
+		strings.TrimSpace(agentConfigURL),
+		strings.TrimSpace(defaultAdminAddr),
+		adminKey,
+	)
 
 	log.Printf("control api listening on %s", *addr)
 	if err := http.ListenAndServe(*addr, srv.Handler()); err != nil {
